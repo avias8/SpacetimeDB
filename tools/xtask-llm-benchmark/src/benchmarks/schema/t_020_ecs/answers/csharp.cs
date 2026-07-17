@@ -3,9 +3,9 @@ using SpacetimeDB;
 public static partial class Module
 {
     [Table(Accessor = "Entity")]
-    public partial struct Entity { [PrimaryKey] public int Id; }
+    public partial struct Entity { [PrimaryKey, AutoInc] public ulong Id; }
 
-    [Table(Accessor = "Position")]
+    [Table(Accessor = "Position", Public = true)]
     public partial struct Position
     {
         [PrimaryKey] public int EntityId;
@@ -21,7 +21,7 @@ public static partial class Module
         public int VY;
     }
 
-    [Table(Accessor = "NextPosition")]
+    [Table(Accessor = "NextPosition", Public = true)]
     public partial struct NextPosition
     {
         [PrimaryKey] public int EntityId;
@@ -32,8 +32,8 @@ public static partial class Module
     [Reducer]
     public static void Seed(ReducerContext ctx)
     {
-        ctx.Db.Entity.Insert(new Entity { Id = 1 });
-        ctx.Db.Entity.Insert(new Entity { Id = 2 });
+        ctx.Db.Entity.Insert(new Entity { Id = 0 });
+        ctx.Db.Entity.Insert(new Entity { Id = 0 });
 
         ctx.Db.Position.Insert(new Position { EntityId = 1, X = 0,  Y = 0 });
         ctx.Db.Position.Insert(new Position { EntityId = 2, X = 10, Y = 0 });

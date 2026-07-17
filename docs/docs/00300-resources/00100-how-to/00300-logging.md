@@ -18,7 +18,10 @@ SpacetimeDB provides logging capabilities for debugging and monitoring your modu
 Use the standard `console` API to write logs from your reducers:
 
 ```typescript
-import { spacetimedb } from 'spacetimedb/server';
+import { schema, t } from 'spacetimedb/server';
+
+const spacetimedb = schema({ /* tables */ });
+export default spacetimedb;
 
 export const process_data = spacetimedb.reducer({ value: t.u32() }, (ctx, { value }) => {
   console.log(`Processing data with value: ${value}`);
@@ -138,7 +141,7 @@ SPACETIMEDB_REDUCER(process_data, ReducerContext ctx, uint32_t value) {
         return Err("Value cannot be zero");
     }
     
-    LOG_DEBUG("Debug information: ctx.sender = " + ctx.sender.to_string());
+    LOG_DEBUG("Debug information: ctx.sender = " + ctx.sender().to_string());
     
     return Ok();
 }
@@ -276,7 +279,7 @@ Include relevant context in your log messages:
 using namespace SpacetimeDB;
 
 SPACETIMEDB_REDUCER(transfer_credits, ReducerContext ctx, uint64_t to_user, uint32_t amount) {
-    LOG_INFO("Credit transfer: from=" + ctx.sender.to_string() + 
+    LOG_INFO("Credit transfer: from=" + ctx.sender().to_string() + 
              ", to=" + std::to_string(to_user) + 
              ", amount=" + std::to_string(amount));
     

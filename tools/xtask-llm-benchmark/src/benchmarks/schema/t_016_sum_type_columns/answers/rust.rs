@@ -12,10 +12,11 @@ pub enum Shape {
     Rectangle(Rect),
 }
 
-#[table(accessor = drawing)]
+#[table(accessor = drawing, public)]
 pub struct Drawing {
     #[primary_key]
-    pub id: i32,
+    #[auto_inc]
+    pub id: u64,
     pub a: Shape,
     pub b: Shape,
 }
@@ -23,7 +24,7 @@ pub struct Drawing {
 #[reducer]
 pub fn seed(ctx: &ReducerContext) {
     ctx.db.drawing().insert(Drawing {
-        id: 1,
+        id: 0,
         a: Shape::Circle(10),
         b: Shape::Rectangle(Rect { width: 4, height: 6 }),
     });

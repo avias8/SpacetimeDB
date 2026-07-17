@@ -71,28 +71,27 @@ impl __sdk::InModule for {type_name} {{
         // Do not implement query col types for nested types.
         // as querying is only supported on top-level table row types.
         let name = type_ref_name(module, typ.ty);
-        let implemented = if let Some(table) = module
+        let implemented = match module
             .tables()
             .find(|t| type_ref_name(module, t.product_type_ref) == name)
         {
-            implement_query_col_types_for_table_struct(module, out, table)
-                .expect("failed to implement query col types");
-            out.newline();
-            true
-        } else {
-            false
+            Some(table) => {
+                implement_query_col_types_for_table_struct(module, out, table)
+                    .expect("failed to implement query col types");
+                out.newline();
+                true
+            }
+            _ => false,
         };
 
-        if !implemented {
-            if let Some(type_ref) = module
+        if !implemented
+            && let Some(type_ref) = module
                 .views()
                 .map(|v| v.product_type_ref)
                 .find(|type_ref| type_ref_name(module, *type_ref) == name)
-            {
-                implement_query_col_types_for_struct(module, out, type_ref)
-                    .expect("failed to implement query col types");
-                out.newline();
-            }
+        {
+            implement_query_col_types_for_struct(module, out, type_ref).expect("failed to implement query col types");
+            out.newline();
         }
 
         vec![OutputFile {
@@ -128,6 +127,7 @@ impl __sdk::InModule for {type_name} {{
         let table_name = table.name.deref();
         let table_name_pascalcase = table.accessor_name.deref().to_case(Case::Pascal);
         let table_handle = table_name_pascalcase.clone() + "TableHandle";
+        let table_accessor = table_name_pascalcase.clone() + "TableAccessor";
         let insert_callback_id = table_name_pascalcase.clone() + "InsertCallbackId";
         let delete_callback_id = table_name_pascalcase.clone() + "DeleteCallbackId";
         let accessor_trait = table_access_trait_name(&table.accessor_name);
@@ -147,6 +147,18 @@ impl __sdk::InModule for {type_name} {{
 pub struct {table_handle}<'ctx> {{
     imp: __sdk::TableHandle<{row_type}>,
     ctx: std::marker::PhantomData<&'ctx super::RemoteTables>,
+}}
+
+/// Lifetime-aware accessor marker for the table `{table_name}`.
+pub struct {table_accessor};
+
+impl __sdk::TableAccessor<super::RemoteTables> for {table_accessor} {{
+    type Row = {row_type};
+    type Handle<'db> = {table_handle}<'db>;
+
+    fn get<'db>(db: &'db super::RemoteTables) -> Self::Handle<'db> {{
+        db.{accessor_method}()
+    }}
 }}
 
 #[allow(non_camel_case_types)]
@@ -184,6 +196,14 @@ pub struct {insert_callback_id}(__sdk::CallbackId);
             write!(
                 out,
                 "
+impl<'ctx> __sdk::TableLike for {table_handle}<'ctx> {{
+    type Row = {row_type};
+    type EventContext = super::EventContext;
+
+    fn count(&self) -> u64 {{ self.imp.count() }}
+    fn iter(&self) -> impl Iterator<Item = {row_type}> + '_ {{ self.imp.iter() }}
+}}
+
 impl<'ctx> __sdk::EventTable for {table_handle}<'ctx> {{
     type Row = {row_type};
     type EventContext = super::EventContext;
@@ -191,6 +211,21 @@ impl<'ctx> __sdk::EventTable for {table_handle}<'ctx> {{
     fn count(&self) -> u64 {{ self.imp.count() }}
     fn iter(&self) -> impl Iterator<Item = {row_type}> + '_ {{ self.imp.iter() }}
 
+    type InsertCallbackId = {insert_callback_id};
+
+    fn on_insert(
+        &self,
+        callback: impl FnMut(&Self::EventContext, &Self::Row) + Send + 'static,
+    ) -> {insert_callback_id} {{
+        {insert_callback_id}(self.imp.on_insert(Box::new(callback)))
+    }}
+
+    fn remove_on_insert(&self, callback: {insert_callback_id}) {{
+        self.imp.remove_on_insert(callback.0)
+    }}
+}}
+
+impl<'ctx> __sdk::WithInsert for {table_handle}<'ctx> {{
     type InsertCallbackId = {insert_callback_id};
 
     fn on_insert(
@@ -213,6 +248,14 @@ impl<'ctx> __sdk::EventTable for {table_handle}<'ctx> {{
             write!(
                 out,
                 "pub struct {delete_callback_id}(__sdk::CallbackId);
+
+impl<'ctx> __sdk::TableLike for {table_handle}<'ctx> {{
+    type Row = {row_type};
+    type EventContext = super::EventContext;
+
+    fn count(&self) -> u64 {{ self.imp.count() }}
+    fn iter(&self) -> impl Iterator<Item = {row_type}> + '_ {{ self.imp.iter() }}
+}}
 
 impl<'ctx> __sdk::Table for {table_handle}<'ctx> {{
     type Row = {row_type};
@@ -247,6 +290,36 @@ impl<'ctx> __sdk::Table for {table_handle}<'ctx> {{
         self.imp.remove_on_delete(callback.0)
     }}
 }}
+
+impl<'ctx> __sdk::WithInsert for {table_handle}<'ctx> {{
+    type InsertCallbackId = {insert_callback_id};
+
+    fn on_insert(
+        &self,
+        callback: impl FnMut(&Self::EventContext, &Self::Row) + Send + 'static,
+    ) -> {insert_callback_id} {{
+        {insert_callback_id}(self.imp.on_insert(Box::new(callback)))
+    }}
+
+    fn remove_on_insert(&self, callback: {insert_callback_id}) {{
+        self.imp.remove_on_insert(callback.0)
+    }}
+}}
+
+impl<'ctx> __sdk::WithDelete for {table_handle}<'ctx> {{
+    type DeleteCallbackId = {delete_callback_id};
+
+    fn on_delete(
+        &self,
+        callback: impl FnMut(&Self::EventContext, &Self::Row) + Send + 'static,
+    ) -> {delete_callback_id} {{
+        {delete_callback_id}(self.imp.on_delete(Box::new(callback)))
+    }}
+
+    fn remove_on_delete(&self, callback: {delete_callback_id}) {{
+        self.imp.remove_on_delete(callback.0)
+    }}
+}}
 "
             );
 
@@ -260,6 +333,21 @@ impl<'ctx> __sdk::Table for {table_handle}<'ctx> {{
 pub struct {update_callback_id}(__sdk::CallbackId);
 
 impl<'ctx> __sdk::TableWithPrimaryKey for {table_handle}<'ctx> {{
+    type UpdateCallbackId = {update_callback_id};
+
+    fn on_update(
+        &self,
+        callback: impl FnMut(&Self::EventContext, &Self::Row, &Self::Row) + Send + 'static,
+    ) -> {update_callback_id} {{
+        {update_callback_id}(self.imp.on_update(Box::new(callback)))
+    }}
+
+    fn remove_on_update(&self, callback: {update_callback_id}) {{
+        self.imp.remove_on_update(callback.0)
+    }}
+}}
+
+impl<'ctx> __sdk::WithUpdate for {table_handle}<'ctx> {{
     type UpdateCallbackId = {update_callback_id};
 
     fn on_update(
@@ -1309,7 +1397,7 @@ impl __sdk::InModule for Reducer {{
 }
 
 fn print_db_update_defn(module: &ModuleDef, visibility: CodegenVisibility, out: &mut Indenter) {
-    writeln!(out, "#[derive(Default)]");
+    writeln!(out, "#[derive(Default, Debug)]");
     writeln!(out, "#[allow(non_snake_case)]");
     writeln!(out, "#[doc(hidden)]");
     out.delimited_block(
@@ -1412,9 +1500,19 @@ impl __sdk::InModule for DbUpdate {{
                     }
                     for view in iter_views(module) {
                         let field_name = table_method_name(&view.accessor_name);
+                        let with_updates = view
+                            .primary_key
+                            .map(|col| {
+                                let pk_field = view.return_columns[col.idx()]
+                                    .accessor_name
+                                    .deref()
+                                    .to_case(Case::Snake);
+                                format!(".with_updates_by_pk(|row| &row.{pk_field})")
+                            })
+                            .unwrap_or_default();
                         writeln!(
                             out,
-                            "diff.{field_name} = cache.apply_diff_to_table::<{}>({:?}, &self.{field_name});",
+                            "diff.{field_name} = cache.apply_diff_to_table::<{}>({:?}, &self.{field_name}){with_updates};",
                             type_ref_name(module, view.product_type_ref),
                             view.name.deref(),
                         );
@@ -1607,6 +1705,7 @@ fn print_const_db_context_types(out: &mut Indenter) {
         out,
         "
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct RemoteModule;
 
 impl __sdk::InModule for RemoteModule {{
@@ -1651,10 +1750,11 @@ impl __sdk::InModule for RemoteTables {{
 /// You must explicitly advance the connection by calling any one of:
 ///
 /// - [`DbConnection::frame_tick`].
-/// - [`DbConnection::run_threaded`].
+#[cfg_attr(not(target_arch = \"wasm32\"), doc = \"- [`DbConnection::run_threaded`].\")]
+#[cfg_attr(target_arch = \"wasm32\", doc = \"- [`DbConnection::run_background_task`].\")]
 /// - [`DbConnection::run_async`].
 /// - [`DbConnection::advance_one_message`].
-/// - [`DbConnection::advance_one_message_blocking`].
+#[cfg_attr(not(target_arch =  \"wasm32\"), doc = \"- [`DbConnection::advance_one_message_blocking`].\")]
 /// - [`DbConnection::advance_one_message_async`].
 ///
 /// Which of these methods you should call depends on the specific needs of your application,
@@ -1752,6 +1852,7 @@ impl DbConnection {{
     /// This is a low-level primitive exposed for power users who need significant control over scheduling.
     /// Most applications should call [`Self::run_threaded`] to spawn a thread
     /// which advances the connection automatically.
+    #[cfg(not(target_arch = \"wasm32\"))]
     pub fn advance_one_message_blocking(&self) -> __sdk::Result<()> {{
         self.imp.advance_one_message_blocking()
     }}
@@ -1777,8 +1878,15 @@ impl DbConnection {{
     }}
 
     /// Spawn a thread which processes WebSocket messages as they are received.
+    #[cfg(not(target_arch = \"wasm32\"))]
     pub fn run_threaded(&self) -> std::thread::JoinHandle<()> {{
         self.imp.run_threaded()
+    }}
+
+    /// Spawn a background task which processes WebSocket messages as they are received.
+    #[cfg(target_arch = \"wasm32\")]
+    pub fn run_background_task(&self) {{
+        self.imp.run_background_task()
     }}
 
     /// Run an `async` loop which processes WebSocket messages when polled.

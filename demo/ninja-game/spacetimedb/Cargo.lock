@@ -621,7 +621,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "spacetimedb"
-version = "2.0.3"
+version = "2.7.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-bindings-macro"
-version = "2.0.3"
+version = "2.7.0"
 dependencies = [
  "heck 0.4.1",
  "humantime",
@@ -654,18 +654,19 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-bindings-sys"
-version = "2.0.3"
+version = "2.7.0"
 dependencies = [
  "spacetimedb-primitives",
 ]
 
 [[package]]
 name = "spacetimedb-lib"
-version = "2.0.3"
+version = "2.7.0"
 dependencies = [
  "anyhow",
  "bitflags",
  "blake3",
+ "bytes",
  "chrono",
  "derive_more",
  "enum-as-inner",
@@ -680,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-primitives"
-version = "2.0.3"
+version = "2.7.0"
 dependencies = [
  "bitflags",
  "either",
@@ -691,14 +692,14 @@ dependencies = [
 
 [[package]]
 name = "spacetimedb-query-builder"
-version = "2.0.3"
+version = "2.7.0"
 dependencies = [
  "spacetimedb-lib",
 ]
 
 [[package]]
 name = "spacetimedb-sats"
-version = "2.0.3"
+version = "2.7.0"
 dependencies = [
  "anyhow",
  "arrayvec",

@@ -11,10 +11,12 @@ import type { ConnectionId } from '../lib/connection_id';
 import { Identity } from '../lib/identity';
 import type { ParamsObj, ReducerCtx } from '../lib/reducers';
 import { type UntypedSchemaDef } from '../lib/schema';
+import type { ScheduleTableForParams } from '../lib/table_schema';
 import { Timestamp } from '../lib/timestamp';
 import {
   type Infer,
   type InferTypeOfRow,
+  type t,
   type TypeBuilder,
 } from '../lib/type_builders';
 import { bsatnBaseSize } from '../lib/util';
@@ -22,7 +24,7 @@ import { Uuid } from '../lib/uuid';
 import { httpClient, type HttpClient } from './http_internal';
 import type { DbView } from './db_view';
 import { makeRandom, type Random } from './rng';
-import { callUserFunction, ReducerCtxImpl, sys } from './runtime';
+import { callUserFunction, ReducerCtxImpl, runWithTx, sys } from './runtime';
 import {
   exportContext,
   registerExport,
@@ -42,7 +44,7 @@ export function makeProcedureExport<
   Ret extends TypeBuilder<any, any>,
 >(
   ctx: SchemaInner,
-  opts: ProcedureOpts | undefined,
+  opts: ProcedureOptsWithOptionalName<Params, Ret> | undefined,
   params: Params,
   ret: Ret,
   fn: ProcedureFn<S, Params, Ret>
@@ -58,6 +60,12 @@ export function makeProcedureExport<
       procedureExport as ProcedureExport<any, any, any>,
       name ?? exportName
     );
+    if (opts?.onSchedule !== undefined) {
+      ctx.pendingSchedules.push({
+        table: opts.onSchedule,
+        functionName: name ?? exportName,
+      });
+    }
   };
 
   return procedureExport;
@@ -69,12 +77,25 @@ export type ProcedureFn<
   Ret extends TypeBuilder<any, any>,
 > = (ctx: ProcedureCtx<S>, args: InferTypeOfRow<Params>) => Infer<Ret>;
 
-export interface ProcedureOpts {
+export interface ProcedureOpts<
+  Params extends ParamsObj = ParamsObj,
+  Ret extends TypeBuilder<any, any> = TypeBuilder<any, any>,
+> {
   name: string;
+  onSchedule?: Ret extends ReturnType<typeof t.unit>
+    ? ScheduleTableForParams<Params>
+    : never;
 }
+
+export type ProcedureOptsWithOptionalName<
+  Params extends ParamsObj = ParamsObj,
+  Ret extends TypeBuilder<any, any> = TypeBuilder<any, any>,
+> = Omit<ProcedureOpts<Params, Ret>, 'name'> & { name?: string };
 
 export interface ProcedureCtx<S extends UntypedSchemaDef> {
   readonly sender: Identity;
+  readonly databaseIdentity: Identity;
+  /** @deprecated Use `databaseIdentity` instead. */
   readonly identity: Identity;
   readonly timestamp: Timestamp;
   readonly connectionId: ConnectionId | null;
@@ -105,7 +126,7 @@ function registerProcedure<
   params: Params,
   ret: Ret,
   fn: ProcedureFn<S, Params, Ret>,
-  opts?: ProcedureOpts
+  opts?: ProcedureOptsWithOptionalName<any, any>
 ) {
   ctx.defineFunction(exportName);
   const paramsType: ProductType = {
@@ -195,8 +216,12 @@ const ProcedureCtxImpl = class ProcedureCtx<S extends UntypedSchemaDef>
     this.#dbView = dbView;
   }
 
-  get identity() {
+  get databaseIdentity() {
     return (this.#identity ??= new Identity(sys.identity()));
+  }
+
+  get identity() {
+    return this.databaseIdentity;
   }
 
   get random() {
@@ -208,38 +233,16 @@ const ProcedureCtxImpl = class ProcedureCtx<S extends UntypedSchemaDef>
   }
 
   withTx<T>(body: (ctx: TransactionCtx<S>) => T): T {
-    const run = () => {
-      const timestamp = sys.procedure_start_mut_tx();
-
-      try {
-        const ctx: TransactionCtx<S> = new TransactionCtxImpl(
+    return runWithTx(
+      timestamp =>
+        new TransactionCtxImpl(
           this.sender,
-          new Timestamp(timestamp),
+          timestamp,
           this.connectionId,
           this.#dbView()
-        );
-        return body(ctx);
-      } catch (e) {
-        sys.procedure_abort_mut_tx();
-        throw e;
-      }
-    };
-
-    let res = run();
-    try {
-      sys.procedure_commit_mut_tx();
-      return res;
-    } catch {
-      // ignore the commit error
-    }
-    console.warn('committing anonymous transaction failed');
-    res = run();
-    try {
-      sys.procedure_commit_mut_tx();
-      return res;
-    } catch (e) {
-      throw new Error('transaction retry failed again', { cause: e });
-    }
+        ) as TransactionCtx<S>,
+      body
+    );
   }
 
   newUuidV4(): Uuid {

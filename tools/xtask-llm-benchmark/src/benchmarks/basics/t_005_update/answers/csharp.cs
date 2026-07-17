@@ -2,17 +2,23 @@ using SpacetimeDB;
 
 public static partial class Module
 {
-    [Table(Accessor = "User")]
+    [Table(Accessor = "User", Public = true)]
     public partial struct User
     {
-        [PrimaryKey] public int Id;
+        [PrimaryKey, AutoInc] public ulong Id;
         public string Name;
         public int Age;
         public bool Active;
     }
 
     [Reducer]
-    public static void UpdateUser(ReducerContext ctx, int id, string name, int age, bool active)
+    public static void InsertUser(ReducerContext ctx, string name, int age, bool active)
+    {
+        ctx.Db.User.Insert(new User { Id = 0, Name = name, Age = age, Active = active });
+    }
+
+    [Reducer]
+    public static void UpdateUser(ReducerContext ctx, ulong id, string name, int age, bool active)
     {
         ctx.Db.User.Id.Update(new User { Id = id, Name = name, Age = age, Active = active });
     }

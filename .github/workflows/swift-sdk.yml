@@ -6,6 +6,7 @@ on:
       - sdks/swift/**
       - demo/ninja-game/client-swift/**
       - demo/simple-module/client-swift/**
+      - templates/keynote-2/spacetimedb-swift-client/**
       - tools/swift-procedure-e2e.sh
       - tools/swift-benchmark-smoke.sh
       - tools/swift-docc-smoke.sh
@@ -17,6 +18,7 @@ on:
       - sdks/swift/**
       - demo/ninja-game/client-swift/**
       - demo/simple-module/client-swift/**
+      - templates/keynote-2/spacetimedb-swift-client/**
       - tools/swift-procedure-e2e.sh
       - tools/swift-benchmark-smoke.sh
       - tools/swift-docc-smoke.sh
@@ -43,10 +45,19 @@ jobs:
         platform:
           - name: macOS
             id: macos
-            runs_on: macos-latest
+            runs_on: macos-26
           - name: iOS Simulator
             id: ios-simulator
-            runs_on: macos-latest
+            runs_on: macos-26
+            destination: generic/platform=iOS Simulator
+          - name: visionOS Simulator
+            id: visionos-simulator
+            runs_on: macos-26
+            destination: generic/platform=visionOS Simulator
+          - name: watchOS Simulator
+            id: watchos-simulator
+            runs_on: macos-26
+            destination: generic/platform=watchOS Simulator
 
     steps:
       - name: Checkout sources
@@ -67,9 +78,13 @@ jobs:
         if: matrix.platform.id == 'macos'
         run: swift test --package-path sdks/swift
 
-      - name: Validate Swift package lockfile
+      - name: Test Swift SDK package with Thread Sanitizer
         if: matrix.platform.id == 'macos'
-        run: swift package --package-path sdks/swift resolve --force-resolved-versions
+        run: NSUnbufferedIO=YES swift test --package-path sdks/swift --sanitize=thread
+
+      - name: Build Swift SDK package for release
+        if: matrix.platform.id == 'macos'
+        run: swift build --package-path sdks/swift --configuration release
 
       - name: Build simple Swift demo client
         if: matrix.platform.id == 'macos'
@@ -79,6 +94,10 @@ jobs:
         if: matrix.platform.id == 'macos'
         run: swift build --package-path demo/ninja-game/client-swift
 
+      - name: Build keynote Swift benchmark client
+        if: matrix.platform.id == 'macos'
+        run: swift build --package-path templates/keynote-2/spacetimedb-swift-client --configuration release
+
       - name: Run Swift benchmark smoke suite
         if: matrix.platform.id == 'macos'
         run: tools/swift-benchmark-smoke.sh
@@ -87,28 +106,25 @@ jobs:
         if: matrix.platform.id == 'macos' && env.SPACETIMEDB_SWIFT_LIVE_TESTS == '1' && env.SPACETIMEDB_LIVE_TEST_DB_NAME != ''
         run: swift test --package-path sdks/swift --filter LiveIntegrationTests
 
-      - name: Build Swift SDK target for iOS simulator
-        if: matrix.platform.id == 'ios-simulator'
-        shell: bash
-        run: |
-          IOS_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-          swift build \
-            --package-path sdks/swift \
-            --target SpacetimeDB \
-            --triple arm64-apple-ios17.0-simulator \
-            --sdk "$IOS_SDK_PATH"
-
-      - name: Assert visionOS is not targeted yet
-        if: matrix.platform.id == 'macos'
-        shell: bash
-        run: |
-          if rg -q '\.visionOS\(' sdks/swift/Package.swift; then
-            echo "visionOS platform is currently not supported for this SDK."
-            echo "If enabling visionOS, update README/DocC/PUBLISHING docs and CI posture in the same change."
-            exit 1
-          fi
-          echo "visionOS platform not declared in Package.swift (expected posture)."
+      - name: Build Swift SDK for ${{ matrix.platform.name }}
+        if: matrix.platform.id != 'macos'
+        working-directory: sdks/swift
+        run: >-
+          xcodebuild
+          -scheme SpacetimeDB
+          -destination '${{ matrix.platform.destination }}'
+          -configuration Release
+          CODE_SIGNING_ALLOWED=NO
+          build
 
       - name: Build DocC archive
         if: matrix.platform.id == 'macos'
         run: tools/swift-docc-smoke.sh
+
+      - name: Validate benchmark package manifest
+        if: matrix.platform.id == 'macos'
+        run: swift package --package-path sdks/swift/Benchmarks describe
+
+      - name: Verify no tracked drift
+        if: matrix.platform.id == 'macos'
+        run: git diff --exit-code

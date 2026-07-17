@@ -2,10 +2,10 @@ using SpacetimeDB;
 
 public static partial class Module
 {
-    [Table(Accessor = "User")]
+    [Table(Accessor = "User", Public = true)]
     public partial struct User
     {
-        [PrimaryKey] public int Id;
+        [PrimaryKey, AutoInc] public ulong Id;
         public string Name;
         public int Age;
         public bool Active;
@@ -14,7 +14,7 @@ public static partial class Module
     [Reducer(ReducerKind.Init)]
     public static void Init(ReducerContext ctx)
     {
-        ctx.Db.User.Insert(new User { Id = 1, Name = "Alice", Age = 30, Active = true });
-        ctx.Db.User.Insert(new User { Id = 2, Name = "Bob",   Age = 22, Active = false });
+        ctx.Db.User.Insert(new User { Id = 0, Name = "Alice", Age = 30, Active = true });
+        ctx.Db.User.Insert(new User { Id = 0, Name = "Bob",   Age = 22, Active = false });
     }
 }

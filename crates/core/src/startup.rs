@@ -1,19 +1,19 @@
 use crossbeam_queue::ArrayQueue;
 use itertools::Itertools;
 use spacetimedb_paths::server::{ConfigToml, LogsDir};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing_appender::rolling;
 use tracing_core::LevelFilter;
 use tracing_flame::FlameLayer;
-use tracing_subscriber::fmt::writer::BoxMakeWriter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{reload, EnvFilter};
 
 use crate::config::{ConfigFile, LogConfig};
 use crate::util::jobs::JobCores;
+use crate::util::thread_scheduling::apply_compute_thread_hint;
 
 pub use core_affinity::CoreId;
 
@@ -57,20 +57,27 @@ pub fn configure_tracing(opts: TracingOptions) {
         .with_target(false)
         .compact();
 
-    let write_to = if let Some(logs_dir) = opts.disk_logging {
+    let use_ansi = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+
+    let file_fmt_layer = if let Some(logs_dir) = opts.disk_logging {
         let roller = rolling::Builder::new()
             .filename_prefix(LogsDir::filename_prefix(&opts.edition))
             .filename_suffix(LogsDir::filename_extension())
             .build(logs_dir)
             .unwrap();
-        // TODO: syslog?
-        BoxMakeWriter::new(std::io::stdout.and(roller))
+        Some(
+            tracing_subscriber::fmt::Layer::default()
+                .with_ansi(false)
+                .with_writer(roller)
+                .event_format(format.clone()),
+        )
     } else {
-        BoxMakeWriter::new(std::io::stdout)
+        None
     };
 
     let fmt_layer = tracing_subscriber::fmt::Layer::default()
-        .with_writer(write_to)
+        .with_ansi(use_ansi)
+        .with_writer(std::io::stdout)
         .event_format(format);
 
     let env_filter_layer = conf_to_filter(opts.config);
@@ -93,6 +100,7 @@ pub fn configure_tracing(opts: TracingOptions) {
     let subscriber = tracing_subscriber::Registry::default()
         .with(tracy_layer)
         .with(fmt_layer)
+        .with(file_fmt_layer)
         .with(flame_layer);
 
     if let Some(conf_file) = opts.reload_config {
@@ -137,13 +145,13 @@ fn reload_config<S>(conf_file: &ConfigToml, reload_handle: &reload::Handle<EnvFi
     let mut prev_time = conf_file.metadata().and_then(|m| m.modified()).ok();
     loop {
         std::thread::sleep(RELOAD_INTERVAL);
-        if let Ok(modified) = conf_file.metadata().and_then(|m| m.modified()) {
-            if prev_time.is_none_or(|prev| modified > prev) {
-                log::info!("reloading log config...");
-                prev_time = Some(modified);
-                if reload_handle.reload(parse_from_file(conf_file)).is_err() {
-                    break;
-                }
+        if let Ok(modified) = conf_file.metadata().and_then(|m| m.modified())
+            && prev_time.is_none_or(|prev| modified > prev)
+        {
+            log::info!("reloading log config...");
+            prev_time = Some(modified);
+            if reload_handle.reload(parse_from_file(conf_file)).is_err() {
+                break;
             }
         }
     }
@@ -318,10 +326,10 @@ impl Cores {
     /// Get the cores of the local host, as reported by the operating system.
     ///
     /// Returns `None` if `num_cpus` is less than 8
-    /// or if core pinning is disabled.
+    /// or if core pinning is not enabled.
     /// If `Some` is returned, the `Vec` is non-empty.
     pub fn get_core_ids() -> Option<Vec<CoreId>> {
-        if cfg!(feature = "no-core-pinning") {
+        if cfg!(not(feature = "core-pinning")) {
             return None;
         }
 
@@ -362,7 +370,7 @@ impl TokioCores {
             // so this ends up working fine
             builder.on_thread_start(move || {
                 if let Some(core) = cores_queue.pop() {
-                    core_affinity::set_for_current(core);
+                    apply_compute_thread_hint(Some(core));
                 } else {
                     #[cfg(target_os = "linux")]
                     if let Some(cpuset) = &self.blocking {
@@ -388,9 +396,8 @@ impl RayonCores {
             .spawn_handler(thread_spawn_handler(tokio_handle))
             .num_threads(self.0.as_ref().map_or(0, |cores| cores.len()))
             .start_handler(move |i| {
-                if let Some(cores) = &self.0 {
-                    core_affinity::set_for_current(cores[i]);
-                }
+                let core = self.0.as_ref().and_then(|cores| cores.get(i).copied());
+                apply_compute_thread_hint(core);
             })
             .build_global()
             .unwrap()

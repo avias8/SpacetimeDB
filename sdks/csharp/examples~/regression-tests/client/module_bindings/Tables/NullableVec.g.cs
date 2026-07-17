@@ -15,7 +15,7 @@ namespace SpacetimeDB.Types
     {
         public sealed class NullableVecHandle : RemoteTableHandle<EventContext, NullableVec>
         {
-            protected override string RemoteTableName => "nullable_vec";
+            public override string RemoteTableName => "nullable_vec";
 
             public sealed class IdUniqueIndex : UniqueIndexBase<uint>
             {
@@ -40,12 +40,12 @@ namespace SpacetimeDB.Types
     public sealed class NullableVecCols
     {
         public global::SpacetimeDB.Col<NullableVec, uint> Id { get; }
-        public global::SpacetimeDB.NullableCol<NullableVec, DbVector2> Pos { get; }
+        public global::SpacetimeDB.Col<NullableVec, DbVector2> Pos { get; }
 
         public NullableVecCols(string tableName)
         {
             Id = new global::SpacetimeDB.Col<NullableVec, uint>(tableName, "id");
-            Pos = new global::SpacetimeDB.NullableCol<NullableVec, DbVector2>(tableName, "pos");
+            Pos = new global::SpacetimeDB.Col<NullableVec, DbVector2>(tableName, "pos");
         }
     }
 

@@ -272,3 +272,6 @@ swift_sdk_followup_backlog.md
 # Swift benchmark local artifacts
 sdks/swift/.benchmarkBaselines/
 sdks/swift/Benchmarks/Baselines/captures/
+
+# Any local file
+*.local

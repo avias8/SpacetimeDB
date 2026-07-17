@@ -11,10 +11,10 @@ public static partial class Module
     [Type]
     public partial record Shape : TaggedEnum<(Circle Circle, Rectangle Rectangle)> {}
 
-    [Table(Accessor = "Drawing")]
+    [Table(Accessor = "Drawing", Public = true)]
     public partial struct Drawing
     {
-        [PrimaryKey] public int Id;
+        [PrimaryKey, AutoInc] public ulong Id;
         public Shape A;
         public Shape B;
     }
@@ -23,7 +23,7 @@ public static partial class Module
     public static void Seed(ReducerContext ctx)
     {
         ctx.Db.Drawing.Insert(new Drawing {
-            Id = 1,
+            Id = 0,
             A = new Shape.Circle(new Circle { Radius = 10 }),
             B = new Shape.Rectangle(new Rectangle { Width = 4, Height = 6 })
         });

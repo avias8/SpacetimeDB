@@ -5,13 +5,14 @@ const entity = table(
     name: 'entity',
   },
   {
-    id: t.i32().primaryKey(),
+    id: t.u64().primaryKey().autoInc(),
   }
 );
 
 const position = table(
   {
     name: 'position',
+    public: true,
   },
   {
     entityId: t.i32().primaryKey(),
@@ -31,9 +32,10 @@ const velocity = table(
   }
 );
 
-const nextPosition = table(
+const next_position = table(
   {
-    name: 'nextPosition',
+    name: 'next_position',
+    public: true,
   },
   {
     entityId: t.i32().primaryKey(),
@@ -42,12 +44,12 @@ const nextPosition = table(
   }
 );
 
-const spacetimedb = schema({ entity, position, velocity, nextPosition });
+const spacetimedb = schema({ entity, position, velocity, next_position });
 export default spacetimedb;
 
 export const seed = spacetimedb.reducer(ctx => {
-  ctx.db.entity.insert({ id: 1 });
-  ctx.db.entity.insert({ id: 2 });
+  ctx.db.entity.insert({ id: 0n });
+  ctx.db.entity.insert({ id: 0n });
 
   ctx.db.position.insert({ entityId: 1, x: 0, y: 0 });
   ctx.db.position.insert({ entityId: 2, x: 10, y: 0 });
@@ -66,10 +68,10 @@ export const step = spacetimedb.reducer(ctx => {
         y: p.y + v.vy,
       };
 
-      if (ctx.db.nextPosition.entityId.find(p.entityId)) {
-        ctx.db.nextPosition.entityId.update(np);
+      if (ctx.db.next_position.entityId.find(p.entityId)) {
+        ctx.db.next_position.entityId.update(np);
       } else {
-        ctx.db.nextPosition.insert(np);
+        ctx.db.next_position.insert(np);
       }
     }
   }

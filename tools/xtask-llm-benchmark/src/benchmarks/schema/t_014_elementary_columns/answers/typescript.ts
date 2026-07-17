@@ -3,9 +3,10 @@ import { table, schema, t } from 'spacetimedb/server';
 const primitive = table(
   {
     name: 'primitive',
+    public: true,
   },
   {
-    id: t.i32().primaryKey(),
+    id: t.u64().primaryKey().autoInc(),
     count: t.i32(),
     total: t.i64(),
     price: t.f32(),
@@ -20,7 +21,7 @@ export default spacetimedb;
 
 export const seed = spacetimedb.reducer(ctx => {
   ctx.db.primitive.insert({
-    id: 1,
+    id: 0n,
     count: 2,
     total: 3000000000n,
     price: 1.5,

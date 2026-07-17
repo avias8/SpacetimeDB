@@ -477,7 +477,7 @@ SPACETIMEDB_REDUCER(set_name, ReducerContext ctx, std::string name) {
     }
     
     // Find and update the user by identity (primary key)
-    auto user_row = ctx.db[user_identity].find(ctx.sender);
+    auto user_row = ctx.db[user_identity].find(ctx.sender());
     if (user_row.has_value()) {
         auto user = user_row.value();
         user.name = validated.value();
@@ -598,7 +598,7 @@ SPACETIMEDB_REDUCER(send_message, ReducerContext ctx, std::string text) {
         return Err(validated.error());
     }
     
-    Message msg{ctx.sender, ctx.timestamp, validated.value()};
+    Message msg{ctx.sender(), ctx.timestamp, validated.value()};
     ctx.db[message].insert(msg);
     return Ok();
 }
@@ -724,20 +724,20 @@ Add to `spacetimedb/src/lib.cpp`:
 
 ```cpp server
 SPACETIMEDB_CLIENT_CONNECTED(client_connected, ReducerContext ctx) {
-    auto user_row = ctx.db[user_identity].find(ctx.sender);
+    auto user_row = ctx.db[user_identity].find(ctx.sender());
     if (user_row.has_value()) {
         auto user = user_row.value();
         user.online = true;
         ctx.db[user_identity].update(user);
     } else {
-        User new_user{ctx.sender, std::nullopt, true};
+        User new_user{ctx.sender(), std::nullopt, true};
         ctx.db[user].insert(new_user);
     }
     return Ok();
 }
 
 SPACETIMEDB_CLIENT_DISCONNECTED(client_disconnected, ReducerContext ctx) {
-    auto user_row = ctx.db[user_identity].find(ctx.sender);
+    auto user_row = ctx.db[user_identity].find(ctx.sender());
     if (user_row.has_value()) {
         auto user = user_row.value();
         user.online = false;
@@ -1444,6 +1444,10 @@ Here we are configuring our SpacetimeDB connection by specifying the server URI,
 
 We are also using `localStorage` to store our SpacetimeDB credentials. This way, we can reconnect to SpacetimeDB with the same `Identity` and token if we refresh the page. The first time we connect, we won't have any credentials stored, so we pass `undefined` to the `withToken` method. This will cause SpacetimeDB to generate new credentials for us.
 
+:::warning
+With no token, SpacetimeDB issues a server-issued identity and a non-expiring token; persist it and pass it back on reconnect to keep the same identity. A lost token can't be recovered, so self-issued identities are for development. For production, authenticate with an OIDC provider such as SpacetimeAuth, which handles token lifecycle. See [Authentication](../../00200-core-concepts/00500-authentication.md).
+:::
+
 If you chose a different name for your database, replace `quickstart-chat` with that name, or republish your module as `quickstart-chat`.
 
 Our React hooks will subscribe to the data in SpacetimeDB. When we subscribe, SpacetimeDB will run our subscription queries and store the result in a local "client cache". This cache will be updated in real-time as the data in the table changes on the server.
@@ -1532,7 +1536,7 @@ Modify the `onSubmitNewName` callback by adding a call to the `setName` reducer:
 const onSubmitNewName = (e: React.FormEvent<HTMLFormElement>) => {
   e.preventDefault();
   setSettingName(false);
-  setName({ name: newName });
+  setName({ name: newName }).catch(console.error);
 };
 ```
 
@@ -1542,11 +1546,11 @@ Next, modify the `onSubmitMessage` callback by adding a call to the `sendMessage
 const onSubmitMessage = (e: React.FormEvent<HTMLFormElement>) => {
   e.preventDefault();
   setNewMessage('');
-  sendMessage({ text: newMessage });
+  sendMessage({ text: newMessage }).catch(console.error);
 };
 ```
 
-SpacetimeDB generated these functions for us based on the type information provided by our module. Calling these functions will invoke our reducers in our module.
+SpacetimeDB generated these functions for us based on the type information provided by our module. Calling these functions will invoke our reducers in our module. They return a `Promise` that rejects if the reducer fails, so we log any error to the console.
 
 Let's try out our app to see the result of these changes.
 
@@ -2556,7 +2560,7 @@ fn on_user_updated(_ctx: &EventContext, old: &User, new: &User) {
 
 #### Print messages
 
-When we receive a new message, we'll print it to standard output, along with the name of the user who sent it. Keep in mind that we only want to do this for new messages, i.e. those inserted by a `send_message` reducer invocation. We have to handle the backlog we receive when our subscription is initialized separately, to ensure they're printed in the correct order. To that effect, our `on_message_inserted` callback will check if the ctx.event type is an `Event::Reducer`, and only print in that case.
+When we receive a new message, we'll print it to standard output, along with the name of the user who sent it. Keep in mind that we only want to do this for new messages, i.e. those inserted by a `send_message` reducer invocation. We have to handle the backlog we receive when our subscription is initialized separately, to ensure they're printed in the correct order. To that effect, our `on_message_inserted` callback will check if the ctx.event type is an `Event::Reducer` (new local messages) or `Event::Transaction` (new messages from others), and only print in that case.
 
 To find the `User` based on the message's `sender` identity, we'll use `ctx.db.user().identity().find(..)`, which behaves like the same function on the server.
 
@@ -2569,7 +2573,7 @@ To `src/main.rs`, add:
 ```rust
 /// Our `Message::on_insert` callback: print new messages.
 fn on_message_inserted(ctx: &EventContext, message: &Message) {
-    if let Event::Reducer(_) = ctx.event {
+    if matches!(ctx.event, Event::Reducer(_) | Event::Transaction) {
         print_message(ctx, message)
     }
 }

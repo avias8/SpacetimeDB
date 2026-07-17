@@ -1,4 +1,4 @@
-Write a SpacetimeDB backend module in TypeScript that demonstrates product types (structs) used in tables.
+Write a SpacetimeDB backend module in TypeScript that defines a product type and uses it in a table.
 
 TYPES
 - Score
@@ -6,7 +6,7 @@ TYPES
   - right: number (i32)
 
 TABLE
-- result
+- result (public)
   - Fields:
     - id: number (i32, primary key)
     - value: Score

@@ -2,11 +2,13 @@ use spacetimedb::{reducer, table, ReducerContext, Table};
 
 #[table(
     accessor = log,
+    public,
     index(accessor = by_user_day, btree(columns = [user_id, day]))
 )]
 pub struct Log {
     #[primary_key]
-    pub id: i32,
+    #[auto_inc]
+    pub id: u64,
     pub user_id: i32,
     pub day: i32,
     pub message: String,
@@ -15,19 +17,19 @@ pub struct Log {
 #[reducer]
 pub fn seed(ctx: &ReducerContext) {
     ctx.db.log().insert(Log {
-        id: 1,
+        id: 0,
         user_id: 7,
         day: 1,
         message: "a".into(),
     });
     ctx.db.log().insert(Log {
-        id: 2,
+        id: 0,
         user_id: 7,
         day: 2,
         message: "b".into(),
     });
     ctx.db.log().insert(Log {
-        id: 3,
+        id: 0,
         user_id: 9,
         day: 1,
         message: "c".into(),

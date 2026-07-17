@@ -54,7 +54,7 @@ fn get_swift_type_use(module: &ModuleDef, ty: &AlgebraicTypeUse) -> String {
                 "SpacetimeDB.Math.Quaternion" | "Quaternion" => "simd_quatf".to_string(),
                 _ => name,
             }
-        },
+        }
         AlgebraicTypeUse::Identity => "Identity".to_string(), // Requires Identity SDK struct
         AlgebraicTypeUse::String => "String".to_string(),
         AlgebraicTypeUse::Array(inner) => format!("[{}]", get_swift_type_use(module, inner)),
@@ -185,7 +185,8 @@ impl Lang for Swift {
                         &mut code,
                         "\nextension {}: Identifiable {{\n    public var id: {} {{\n        return self.{}\n    }}\n}}",
                         row_type, pk_swift_ty, pk_field_name
-                    ).unwrap();
+                    )
+                    .unwrap();
                 }
             }
         }

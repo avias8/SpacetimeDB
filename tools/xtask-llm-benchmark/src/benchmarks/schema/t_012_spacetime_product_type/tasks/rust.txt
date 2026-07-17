@@ -1,4 +1,4 @@
-﻿Write a SpacetimeDB backend module in Rust that defines a product type and uses it in a table.
+Write a SpacetimeDB backend module in Rust that defines a product type and uses it in a table.
 
 TYPES
 - Struct: Score
@@ -7,7 +7,7 @@ TYPES
     - right: i32
 
 TABLE
-- result
+- result (public)
   - Struct: ResultRow
   - Fields:
     - id: i32 (primary key)

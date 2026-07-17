@@ -15,11 +15,24 @@ pub struct BuiltPrompt {
     pub system: Option<String>,
     pub static_prefix: Option<String>,
     pub segments: Vec<Segment<'static>>,
+    /// When true, the provider should enable web search (OpenRouter :online).
+    pub search_enabled: bool,
+}
+
+/// SpacetimeDB version as "major.minor".
+fn spacetimedb_version() -> String {
+    let full = spacetimedb_lib::version::spacetimedb_lib_version();
+    let mut parts = full.splitn(3, '.');
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}"),
+        _ => full.to_string(),
+    }
 }
 
 impl PromptBuilder {
-    pub fn build_segmented(&self, context: &str) -> BuiltPrompt {
-        let version = "1.6";
+    pub fn build_segmented(&self, mode: &str, context: &str) -> BuiltPrompt {
+        let version = spacetimedb_version();
+        let search_enabled = mode == "search";
 
         // SYSTEM: hygiene-only for Knowledge; hygiene + stricter output rules for Conformance.
         let system = Some(format!(
@@ -32,13 +45,21 @@ Rules:\n\
             lang = self.lang
         ));
 
-        let static_prefix = Some(if context.trim().is_empty() {
-            "<<<DOCS START>>>\nNo documentation provided. You must rely on your knowledge of SpacetimeDB syntax and conventions.\n<<<DOCS END>>>\n".to_string()
+        let static_prefix = Some(if search_enabled {
+            "<<<DOCS START>>>\nYou MUST search the web for SpacetimeDB documentation and examples before writing any code. Do not write code until you have searched.\n<<<DOCS END>>>\n".to_string()
+        } else if context.trim().is_empty() {
+            "<<<DOCS START>>>\nUse your knowledge of the latest SpacetimeDB syntax and conventions.\n<<<DOCS END>>>\n"
+                .to_string()
         } else {
-            format!(
-                "<<<DOCS START>>>Context:\n{context}\n<<<DOCS END>>>\n",
-                context = context,
-            )
+            let preamble = match mode {
+                "guidelines" => format!(
+                    "The following are SpacetimeDB {} guidelines. \
+                     All examples shown are correct patterns to follow.",
+                    self.lang
+                ),
+                _ => "Reference documentation:".to_string(),
+            };
+            format!("<<<DOCS START>>>\n{preamble}\n\n{context}\n<<<DOCS END>>>\n",)
         });
 
         // TASK: identical in both modes; API details must come from DOCS in Knowledge mode.
@@ -62,6 +83,7 @@ HARD CONSTRAINTS:\n\
             system,
             static_prefix,
             segments: vec![Segment::new("user", dynamic).keep().min_chars(0).weight(8.0)],
+            search_enabled,
         }
     }
 }
@@ -107,5 +129,30 @@ fn find_tasks_file(task_root: &Path, lang: Lang) -> Option<PathBuf> {
             let p = dir.join("typescript.txt");
             p.exists().then_some(p)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn prompt_uses_workspace_version() {
+        let pb = super::PromptBuilder {
+            lang: "TypeScript".into(),
+            task_id: "t_000".into(),
+            instructions: "test".into(),
+        };
+        let built = pb.build_segmented("no_context", "");
+        let task = &built.segments[0].text;
+        let expected = format!("SpacetimeDB {} syntax", super::spacetimedb_version());
+        assert!(task.contains(&expected), "prompt missing '{expected}': {task}");
+    }
+
+    #[test]
+    fn version_is_major_minor() {
+        let v = super::spacetimedb_version();
+        let mut parts = v.split('.');
+        assert!(parts.next().unwrap().parse::<u32>().is_ok(), "major not numeric: {v}");
+        assert!(parts.next().unwrap().parse::<u32>().is_ok(), "minor not numeric: {v}");
+        assert_eq!(parts.next(), None, "expected major.minor only: {v}");
     }
 }
