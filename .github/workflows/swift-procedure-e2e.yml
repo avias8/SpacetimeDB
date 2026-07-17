@@ -51,16 +51,18 @@ jobs:
         with:
           workspaces: ${{ github.workspace }}
           shared-key: spacetimedb
-          save-if: false
           prefix-key: v1
 
-      - name: Install SpacetimeDB CLI from local checkout
+      - name: Build SpacetimeDB CLI from local checkout
         run: |
           export CARGO_HOME="$HOME/.cargo"
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-          cargo install --force --path crates/cli --locked --message-format=short
-          cargo install --force --path crates/standalone --features allow_loopback_http_for_tests --locked --message-format=short
-          ln -sf "$CARGO_HOME/bin/spacetimedb-cli" "$CARGO_HOME/bin/spacetime"
+          cargo build --locked --message-format=short \
+            -p spacetimedb-cli \
+            -p spacetimedb-standalone \
+            --features spacetimedb-standalone/allow_loopback_http_for_tests
+          ln -sf "$CARGO_TARGET_DIR/debug/spacetimedb-cli" "$CARGO_HOME/bin/spacetime"
+          ln -sf "$CARGO_TARGET_DIR/debug/spacetimedb-standalone" "$CARGO_HOME/bin/spacetimedb-standalone"
 
       - name: Show toolchain versions
         run: |

@@ -16,13 +16,6 @@ let package = Package(
             targets: ["SpacetimeDB"]
         ),
     ],
-    dependencies: [
-        .package(
-            url: "https://github.com/ordo-one/package-benchmark",
-            from: "1.30.0",
-            traits: []
-        ),
-    ],
     targets: [
         .target(
             name: "SpacetimeDB"
@@ -30,28 +23,6 @@ let package = Package(
         .testTarget(
             name: "SpacetimeDBTests",
             dependencies: ["SpacetimeDB"]
-        ),
-        .executableTarget(
-            name: "SpacetimeDBBenchmarks",
-            dependencies: [
-                "SpacetimeDB",
-                .product(name: "Benchmark", package: "package-benchmark"),
-            ],
-            path: "Benchmarks/SpacetimeDBBenchmarks",
-            plugins: [
-                .plugin(name: "BenchmarkPlugin", package: "package-benchmark"),
-            ]
-        ),
-        .executableTarget(
-            name: "GeneratedBindingsBenchmarks",
-            dependencies: [
-                "SpacetimeDB",
-                .product(name: "Benchmark", package: "package-benchmark"),
-            ],
-            path: "Benchmarks/GeneratedBindingsBenchmarks",
-            plugins: [
-                .plugin(name: "BenchmarkPlugin", package: "package-benchmark"),
-            ]
         ),
     ]
 )

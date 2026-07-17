@@ -7,7 +7,7 @@ SDK_DIR="$ROOT_DIR/sdks/swift"
 
 docc_cmd=(
   xcodebuild docbuild
-  -scheme SpacetimeDB-Package
+  -scheme SpacetimeDB
   -destination 'generic/platform=macOS'
   -derivedDataPath .build/docc
   -quiet

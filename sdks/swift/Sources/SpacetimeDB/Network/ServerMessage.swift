@@ -45,6 +45,16 @@ public enum ServerMessage: Decodable, BSATNSpecialDecodable, Sendable {
     }
 }
 
+public extension BSATNDecoder {
+    @inlinable @inline(__always)
+    func decode(_ type: ServerMessage.Type, from data: Data) throws -> ServerMessage {
+        try data.withUnsafeBytes { buffer in
+            var reader = BSATNReader(buffer: buffer)
+            return try ServerMessage.decodeBSATN(from: &reader)
+        }
+    }
+}
+
 // MARK: - Connection / Subscription
 
 /// Rust: `InitialConnection { identity: Identity, connection_id: ConnectionId, token: Box<str> }`

@@ -5,6 +5,8 @@ import Synchronization
 public final class ClientCache: Sendable {
     private struct State {
         var tables: [String: any SpacetimeTableCacheProtocol] = [:]
+        var pendingSyncTableNames: Set<String> = []
+        var isSyncScheduled = false
     }
 
     private let state: Mutex<State> = Mutex(State())
@@ -24,6 +26,23 @@ public final class ClientCache: Sendable {
                 if existing is TableCache<T> {
                     // Idempotent re-registration: keep the existing cache instance so
                     // any replicated rows already loaded are preserved.
+                    return
+                }
+                fatalError("Table \(tableName) already registered with a different row type.")
+            }
+            let cache = TableCache<T>(tableName: tableName)
+            state.tables[tableName] = cache
+        }
+    }
+
+    /// Registers a generated table while preserving static BSATN decoder dispatch.
+    public func registerTable<T: Decodable & Sendable & BSATNSpecialDecodable>(
+        tableName: String,
+        rowType: T.Type
+    ) {
+        state.withLock { state in
+            if let existing = state.tables[tableName] {
+                if existing is TableCache<T> {
                     return
                 }
                 fatalError("Table \(tableName) already registered with a different row type.")
@@ -57,6 +76,19 @@ public final class ClientCache: Sendable {
             fatalError("Table \(tableName) not registered or of wrong type.")
         }
         return table
+    }
+
+    /// Clears all replicated rows while preserving generated table registrations.
+    public func clear() {
+        let tablesSnapshot = state.withLock { state in
+            state.tables
+        }
+
+        for table in tablesSnapshot.values {
+            table.clear()
+        }
+
+        scheduleObservableSync(for: Set(tablesSnapshot.keys))
     }
 
     /// Processes a TransactionUpdate payload from the network.
@@ -116,15 +148,47 @@ public final class ClientCache: Sendable {
             }
         }
         
-        // After all background processing is done, sync modified tables to MainActor for UI observers
-        if !modifiedTables.isEmpty {
-            Task { @MainActor in
-                for tableName in modifiedTables {
-                    if let table = tablesSnapshot[tableName] as? (any ThreadSafeSyncable) {
-                        table.sync()
-                    }
-                }
+        scheduleObservableSync(for: modifiedTables)
+    }
+
+    private func scheduleObservableSync(for tableNames: Set<String>) {
+        guard !tableNames.isEmpty else { return }
+        let shouldSchedule = state.withLock { state -> Bool in
+            state.pendingSyncTableNames.formUnion(tableNames)
+            guard !state.isSyncScheduled else { return false }
+            state.isSyncScheduled = true
+            return true
+        }
+        guard shouldSchedule else { return }
+
+        Task { @MainActor [weak self] in
+            self?.drainObservableSync()
+        }
+    }
+
+    @MainActor
+    private func drainObservableSync() {
+        let tablesToSync: [any ThreadSafeSyncable] = state.withLock { state in
+            let names = state.pendingSyncTableNames
+            state.pendingSyncTableNames.removeAll(keepingCapacity: true)
+            return names.compactMap { state.tables[$0] as? any ThreadSafeSyncable }
+        }
+
+        for table in tablesToSync {
+            table.sync()
+        }
+
+        let shouldReschedule = state.withLock { state -> Bool in
+            guard !state.pendingSyncTableNames.isEmpty else {
+                state.isSyncScheduled = false
+                return false
             }
+            return true
+        }
+        guard shouldReschedule else { return }
+
+        Task { @MainActor [weak self] in
+            self?.drainObservableSync()
         }
     }
 
@@ -185,7 +249,7 @@ public final class ClientCache: Sendable {
 }
 
 /// Helper protocol to allow ClientCache to call sync() without knowing the concrete type T
-private protocol ThreadSafeSyncable {
+private protocol ThreadSafeSyncable: Sendable {
     @MainActor func sync()
 }
 

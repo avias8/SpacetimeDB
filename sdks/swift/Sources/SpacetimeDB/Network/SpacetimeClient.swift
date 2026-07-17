@@ -12,29 +12,25 @@ public enum SpacetimeClientConnectionError: Error, Equatable {
     case keepAliveTimeout
 }
 
-private final class AsyncResponseContinuation<Value: Sendable>: @unchecked Sendable {
-    private let stateLock: Mutex<Void> = Mutex(())
-    private var continuation: CheckedContinuation<Value, Error>?
-    private var timeoutTask: Task<Void, Never>?
-    private var completionResult: Result<Value, Error>?
-    private var isCompleted = false
-
-    @inline(__always)
-    private func withStateLock<R>(_ body: () throws -> R) rethrows -> R {
-        try stateLock.withLock { _ in
-            try body()
-        }
+private final class AsyncResponseContinuation<Value: Sendable>: Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<Value, Error>?
+        var timeoutTask: Task<Void, Never>?
+        var completionResult: Result<Value, Error>?
+        var isCompleted = false
     }
+
+    private let state: Mutex<State> = Mutex(State())
 
     func install(_ continuation: CheckedContinuation<Value, Error>) {
         var resultToResume: Result<Value, Error>?
 
-        withStateLock {
-            if isCompleted {
-                resultToResume = completionResult
-                completionResult = nil
+        state.withLock { state in
+            if state.isCompleted {
+                resultToResume = state.completionResult
+                state.completionResult = nil
             } else {
-                self.continuation = continuation
+                state.continuation = continuation
             }
         }
 
@@ -46,11 +42,11 @@ private final class AsyncResponseContinuation<Value: Sendable>: @unchecked Senda
     func setTimeoutTask(_ task: Task<Void, Never>) {
         var shouldCancelTask = false
 
-        withStateLock {
-            if isCompleted {
+        state.withLock { state in
+            if state.isCompleted {
                 shouldCancelTask = true
             } else {
-                timeoutTask = task
+                state.timeoutTask = task
             }
         }
 
@@ -63,19 +59,19 @@ private final class AsyncResponseContinuation<Value: Sendable>: @unchecked Senda
         var continuationToResume: CheckedContinuation<Value, Error>?
         var timeoutTaskToCancel: Task<Void, Never>?
 
-        let didResolve = withStateLock { () -> Bool in
-            if isCompleted {
+        let didResolve = state.withLock { state -> Bool in
+            if state.isCompleted {
                 return false
             }
-            isCompleted = true
-            timeoutTaskToCancel = timeoutTask
-            timeoutTask = nil
+            state.isCompleted = true
+            timeoutTaskToCancel = state.timeoutTask
+            state.timeoutTask = nil
 
-            if let continuation {
+            if let continuation = state.continuation {
                 continuationToResume = continuation
-                self.continuation = nil
+                state.continuation = nil
             } else {
-                completionResult = result
+                state.completionResult = result
             }
             return true
         }
@@ -115,13 +111,6 @@ public extension SpacetimeClientDelegate {
 }
 
 public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDelegate {
-    private struct UnsafeSendableCallback: @unchecked Sendable {
-        var value: (@Sendable () -> Void)?
-    }
-    private struct UnsafeSendableCountCallback: @unchecked Sendable {
-        var value: (@Sendable (UInt64) -> Void)?
-    }
-
     public let serverUrl: URL
     public let moduleName: String
     
@@ -160,20 +149,13 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         withStateLock { _connectionState }
     }
 
-    private static let sharedStateLock: Mutex<Void> = Mutex(())
-    @inline(__always)
-    private static func withSharedStateLock<R>(_ body: () throws -> R) rethrows -> R {
-        try sharedStateLock.withLock { _ in
-            try body()
-        }
-    }
-    nonisolated(unsafe) private static var _shared: SpacetimeClient?
+    private static let sharedState: Mutex<SpacetimeClient?> = Mutex(nil)
     public static var shared: SpacetimeClient? {
-        get { withSharedStateLock { _shared } }
-        set { withSharedStateLock { _shared = newValue } }
+        get { sharedState.withLock { $0 } }
+        set { sharedState.withLock { $0 = newValue } }
     }
-    
-    nonisolated(unsafe) public static var clientCache = ClientCache()
+
+    public static let clientCache = ClientCache()
 
     private let transport: WebSocketTransport
     private let reconnectPolicy: ReconnectPolicy?
@@ -193,8 +175,8 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     private var activeSubscriptionByQuerySetId: [QuerySetId: SubscriptionHandle] = [:]
     private var pendingUnsubscribeByRequestId: [RequestId: SubscriptionHandle] = [:]
     private var managedSubscriptions: [ObjectIdentifier: SubscriptionHandle] = [:]
-    private var rawTransactionUpdateObserver = UnsafeSendableCallback(value: nil)
-    private var rawTransactionUpdateCountObserver = UnsafeSendableCountCallback(value: nil)
+    private var rawTransactionUpdateObserver: (@Sendable () -> Void)?
+    private var rawTransactionUpdateCountObserver: (@Sendable (UInt64) -> Void)?
     private var pendingRawTransactionUpdateCount: UInt64 = 0
     private var rawTransactionUpdateCountDrainScheduled = false
     private let decodeQueue = DispatchQueue(label: "spacetimedb.client.decode", qos: .utility)
@@ -259,7 +241,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     /// The callback may execute on internal non-main queues.
     public func setRawTransactionUpdateObserver(_ observer: (@Sendable () -> Void)?) {
         withCallbackStateLock {
-            rawTransactionUpdateObserver.value = observer
+            rawTransactionUpdateObserver = observer
         }
     }
 
@@ -270,7 +252,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     /// streams. The callback may execute on internal non-main queues.
     public func setRawTransactionUpdateCountObserver(_ observer: (@Sendable (UInt64) -> Void)?) {
         withCallbackStateLock {
-            rawTransactionUpdateCountObserver.value = observer
+            rawTransactionUpdateCountObserver = observer
         }
     }
 
@@ -418,6 +400,15 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     }
 
     public func send<T: Encodable>(_ message: T) {
+        do {
+            let data = try encoder.encode(message)
+            enqueue(data)
+        } catch {
+            Log.network.error("Failed to encode message: \(error.localizedDescription)")
+        }
+    }
+
+    public func send(_ message: ClientMessage) {
         do {
             let data = try encoder.encode(message)
             enqueue(data)
@@ -633,14 +624,14 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
 
     public func subscribe(
         queries: [String],
-        onApplied: (() -> Void)? = nil,
-        onError: ((String) -> Void)? = nil
+        onApplied: (@MainActor @Sendable () -> Void)? = nil,
+        onError: (@MainActor @Sendable (String) -> Void)? = nil
     ) -> SubscriptionHandle {
         let timedOnApplied = onApplied.map { callback in
-            makeTimedVoidCallback(named: "subscription.on_applied", callback)
+            makeTimedMainActorVoidCallback(named: "subscription.on_applied", callback)
         }
         let timedOnError = onError.map { callback in
-            makeTimedCallback(named: "subscription.on_error", callback)
+            makeTimedMainActorCallback(named: "subscription.on_error", callback)
         }
         let handle = SubscriptionHandle(queries: queries, client: self, onApplied: timedOnApplied, onError: timedOnError)
         withStateLock {
@@ -920,7 +911,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
             if shouldSchedule {
                 rawTransactionUpdateCountDrainScheduled = true
             }
-            return (rawTransactionUpdateObserver.value, shouldSchedule)
+            return (rawTransactionUpdateObserver, shouldSchedule)
         }
         syncObserver?()
 
@@ -933,7 +924,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     private func drainRawTransactionUpdateCountObserver() {
         while true {
             let next = withCallbackStateLock { () -> ((@Sendable (UInt64) -> Void), UInt64)? in
-                guard let observer = rawTransactionUpdateCountObserver.value else {
+                guard let observer = rawTransactionUpdateCountObserver else {
                     pendingRawTransactionUpdateCount = 0
                     rawTransactionUpdateCountDrainScheduled = false
                     return nil
@@ -1215,20 +1206,17 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     }
 
     private func emitCounter(_ name: String, by value: Int64 = 1, tags: [String: String] = [:]) {
-        let metrics = SpacetimeObservability.metrics
-        guard !(metrics is NoopSpacetimeMetrics) else { return }
+        guard let metrics = SpacetimeObservability.activeMetrics else { return }
         metrics.incrementCounter(name, by: value, tags: tags)
     }
 
     private func emitGauge(_ name: String, value: Double, tags: [String: String] = [:]) {
-        let metrics = SpacetimeObservability.metrics
-        guard !(metrics is NoopSpacetimeMetrics) else { return }
+        guard let metrics = SpacetimeObservability.activeMetrics else { return }
         metrics.recordGauge(name, value: value, tags: tags)
     }
 
     private func emitTiming(_ name: String, milliseconds: Double, tags: [String: String] = [:]) {
-        let metrics = SpacetimeObservability.metrics
-        guard !(metrics is NoopSpacetimeMetrics) else { return }
+        guard let metrics = SpacetimeObservability.activeMetrics else { return }
         metrics.recordTiming(name, milliseconds: milliseconds, tags: tags)
     }
 
@@ -1322,6 +1310,19 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         }
     }
 
+    private func makeTimedMainActorVoidCallback(
+        named callbackName: String,
+        _ callback: @escaping @MainActor @Sendable () -> Void
+    ) -> (@MainActor @Sendable () -> Void) {
+        { @MainActor [weak self] in
+            guard let self else {
+                callback()
+                return
+            }
+            self.emitTimedCallbackMetric(named: callbackName, callback)
+        }
+    }
+
     private func makeTimedCallback<T>(
         named callbackName: String,
         _ callback: @escaping (T) -> Void
@@ -1337,9 +1338,23 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         }
     }
 
+    private func makeTimedMainActorCallback<T: Sendable>(
+        named callbackName: String,
+        _ callback: @escaping @MainActor @Sendable (T) -> Void
+    ) -> (@MainActor @Sendable (T) -> Void) {
+        { @MainActor [weak self] value in
+            guard let self else {
+                callback(value)
+                return
+            }
+            self.emitTimedCallbackMetric(named: callbackName) {
+                callback(value)
+            }
+        }
+    }
+
     private func emitTimedCallbackMetric(named callbackName: String, _ callback: () -> Void) {
-        let metrics = SpacetimeObservability.metrics
-        guard !(metrics is NoopSpacetimeMetrics) else {
+        guard let metrics = SpacetimeObservability.activeMetrics else {
             callback()
             return
         }

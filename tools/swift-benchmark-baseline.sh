@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_DIR="$ROOT_DIR/sdks/swift"
+BENCHMARK_DIR="$SDK_DIR/Benchmarks"
 TARGET="SpacetimeDBBenchmarks"
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -49,16 +50,16 @@ if [[ -n "$FILTER_REGEX" ]]; then
 fi
 
 (
-  cd "$SDK_DIR"
+  cd "$BENCHMARK_DIR"
   "${update_cmd[@]}"
 )
 
-SOURCE_RESULTS_FILE="$SDK_DIR/.benchmarkBaselines/$TARGET/$BASELINE_NAME/results.json"
+SOURCE_RESULTS_FILE="$BENCHMARK_DIR/.benchmarkBaselines/$TARGET/$BASELINE_NAME/results.json"
 cp "$SOURCE_RESULTS_FILE" "$RAW_RESULTS_FILE"
 cp "$RAW_RESULTS_FILE" "$LATEST_RAW_FILE"
 
 (
-  cd "$SDK_DIR"
+  cd "$BENCHMARK_DIR"
   "${read_cmd[@]}"
 ) > "$SUMMARY_FILE"
 cp "$SUMMARY_FILE" "$LATEST_SUMMARY_FILE"
@@ -92,4 +93,4 @@ echo "  summary: $SUMMARY_FILE"
 echo "  meta:    $METADATA_FILE"
 echo
 echo "Compare against another baseline:"
-echo "  cd $SDK_DIR && swift package benchmark baseline compare $BASELINE_NAME <other-baseline> --target $TARGET --no-progress"
+echo "  cd $BENCHMARK_DIR && swift package benchmark baseline compare $BASELINE_NAME <other-baseline> --target $TARGET --no-progress"

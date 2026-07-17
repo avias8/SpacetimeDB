@@ -108,6 +108,46 @@ final class CacheTests: XCTestCase {
     }
 
     @MainActor
+    func testDeferredIndexPreservesDuplicateRowsAcrossDelete() throws {
+        let cache = TableCache<Person>(tableName: "Person")
+        let encoder = BSATNEncoder()
+        let alice = Person(id: 1, name: "Alice")
+        let bob = Person(id: 2, name: "Bob")
+        let aliceBytes = try encoder.encode(alice)
+        let bobBytes = try encoder.encode(bob)
+
+        try cache.handleBulkInsert(rowBytesList: [aliceBytes, aliceBytes, bobBytes])
+        cache.sync()
+        XCTAssertEqual(cache.rows, [alice, alice, bob])
+
+        try cache.handleDelete(rowBytes: aliceBytes)
+        cache.sync()
+        XCTAssertEqual(cache.rows.count, 2)
+        XCTAssertEqual(cache.rows.filter { $0 == alice }.count, 1)
+        XCTAssertEqual(cache.rows.filter { $0 == bob }.count, 1)
+
+        try cache.handleDelete(rowBytes: aliceBytes)
+        cache.sync()
+        XCTAssertEqual(cache.rows, [bob])
+    }
+
+    @MainActor
+    func testClearReturnsCacheToDeferredInsertMode() throws {
+        let cache = TableCache<Person>(tableName: "Person")
+        let encoder = BSATNEncoder()
+        let first = try encoder.encode(Person(id: 1, name: "First"))
+        let second = Person(id: 2, name: "Second")
+
+        try cache.handleInsert(rowBytes: first)
+        try cache.handleDelete(rowBytes: first)
+        cache.clear()
+        try cache.handleInsert(rowBytes: encoder.encode(second))
+        cache.sync()
+
+        XCTAssertEqual(cache.rows, [second])
+    }
+
+    @MainActor
     func testClientCachePairsDeleteInsertAsUpdateCallback() throws {
         let clientCache = ClientCache()
         let personCache = TableCache<Person>(tableName: "Person")
@@ -156,6 +196,27 @@ final class CacheTests: XCTestCase {
         updateHandle.cancel()
     }
 
+    @MainActor
+    func testClientCacheCoalescesObservableSyncForUpdateBurst() async throws {
+        let clientCache = ClientCache()
+        let personCache = TableCache<Person>(tableName: "Person")
+        clientCache.registerTable(name: "Person", cache: personCache)
+
+        let encoder = BSATNEncoder()
+        let first = try encoder.encode(Person(id: 1, name: "A"))
+        let second = try encoder.encode(Person(id: 2, name: "B"))
+
+        clientCache.applyTransactionUpdate(makeInsertUpdate(row: first, querySetId: 1))
+        clientCache.applyTransactionUpdate(makeInsertUpdate(row: second, querySetId: 2))
+        XCTAssertTrue(personCache.rows.isEmpty)
+
+        for _ in 0..<20 where personCache.rows.count < 2 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(Set(personCache.rows.map(\.id)), Set([1, 2]))
+    }
+
     private func makeRowList(rows: [Data]) -> BsatnRowList {
         var rowsData = Data()
         var offsets: [UInt64] = []
@@ -165,6 +226,27 @@ final class CacheTests: XCTestCase {
             rowsData.append(row)
         }
         return BsatnRowList(sizeHint: .rowOffsets(offsets), rowsData: rowsData)
+    }
+
+    private func makeInsertUpdate(row: Data, querySetId: UInt32) -> TransactionUpdate {
+        TransactionUpdate(querySets: [
+            QuerySetUpdate(
+                querySetId: QuerySetId(rawValue: querySetId),
+                tables: [
+                    TableUpdate(
+                        tableName: RawIdentifier(rawValue: "Person"),
+                        rows: [
+                            .persistentTable(
+                                PersistentTableRows(
+                                    inserts: makeRowList(rows: [row]),
+                                    deletes: .empty
+                                )
+                            )
+                        ]
+                    )
+                ]
+            )
+        ])
     }
 }
 

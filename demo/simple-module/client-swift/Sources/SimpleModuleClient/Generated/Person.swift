@@ -3,6 +3,7 @@
 
 import Foundation
 import SpacetimeDB
+import simd
 
 public struct Person: Codable, Sendable, BSATNSpecialDecodable, BSATNSpecialEncodable {
   public var id: UInt64
@@ -10,7 +11,7 @@ public struct Person: Codable, Sendable, BSATNSpecialDecodable, BSATNSpecialEnco
   public var createdAtMicros: Int64
   public var createdByHex: String
 
-  public static func decodeBSATN(from reader: BSATNReader) throws -> Person {
+  public static func decodeBSATN(from reader: inout BSATNReader) throws -> Person {
     return Person(
       id: try reader.readU64(),
       name: try reader.readString(),
@@ -19,7 +20,7 @@ public struct Person: Codable, Sendable, BSATNSpecialDecodable, BSATNSpecialEnco
     )
   }
 
-  public func encodeBSATN(to storage: BSATNStorage) throws {
+  public func encodeBSATN(to storage: inout BSATNStorage) throws {
     storage.appendU64(self.id)
     try storage.appendString(self.name)
     storage.appendI64(self.createdAtMicros)

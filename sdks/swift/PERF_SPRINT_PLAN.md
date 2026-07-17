@@ -37,8 +37,8 @@ Close the measured throughput gap in the Swift SDK hot paths (BSATN encode/decod
 
 ## Validation Matrix
 
-- `swift test --package-path sdks/swift`
-- `swift package --package-path sdks/swift benchmark --target SpacetimeDBBenchmarks --no-progress`
+- `swift test`
+- `swift package --package-path Benchmarks benchmark --target SpacetimeDBBenchmarks --no-progress`
 - Keynote TPS: 3-run sample (Swift + Rust clients), same server and knobs.
 
 ## Reporting Template

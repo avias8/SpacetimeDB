@@ -49,8 +49,13 @@ spacetime publish \
   "${DB_NAME}"
 
 echo "==> Generating Swift bindings with in-repo CLI"
-cargo run -q -p spacetimedb-cli --manifest-path "${REPO_ROOT}/Cargo.toml" -- \
-  generate \
+if [[ "${CI:-}" == "true" ]]; then
+  GENERATE_CMD=(spacetime generate)
+else
+  GENERATE_CMD=(cargo run -q -p spacetimedb-cli --manifest-path "${REPO_ROOT}/Cargo.toml" -- generate)
+fi
+
+"${GENERATE_CMD[@]}" \
   --lang swift \
   --out-dir "${GENERATED_DIR}" \
   --module-path "${MODULE_ABS}" \
@@ -63,6 +68,11 @@ if [[ ! -f "${GENERATED_PROCEDURE_FILE}" ]]; then
   ls -1 "${GENERATED_DIR}" >&2
   exit 1
 fi
+
+# The runner compiles SDK and generated sources as one module, so the generated
+# file must not import the module that is still being built.
+sed -i.bak '/^import SpacetimeDB$/d' "${GENERATED_PROCEDURE_FILE}"
+rm -f "${GENERATED_PROCEDURE_FILE}.bak"
 
 RUNNER_FILE="${OUT_ROOT}/runner.swift"
 RUNNER_BIN="${OUT_ROOT}/runner-bin"
