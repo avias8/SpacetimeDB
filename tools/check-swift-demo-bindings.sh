@@ -9,6 +9,12 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "${CI:-}" == "true" ]] && command -v spacetime >/dev/null 2>&1; then
+  GENERATE_CMD=(spacetime generate)
+else
+  GENERATE_CMD=(cargo run -q -p spacetimedb-cli --manifest-path "${REPO_ROOT}/Cargo.toml" -- generate)
+fi
+
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/spacetimedb-swift-bindings-check.XXXXXX")"
 trap 'rm -rf "${TMP_ROOT}"' EXIT
 
@@ -17,16 +23,14 @@ NINJA_TMP="${TMP_ROOT}/ninja-generated"
 mkdir -p "${SIMPLE_TMP}" "${NINJA_TMP}"
 
 echo "==> Regenerating simple-module Swift bindings"
-cargo run -q -p spacetimedb-cli --manifest-path "${REPO_ROOT}/Cargo.toml" -- \
-  generate \
+"${GENERATE_CMD[@]}" \
   --lang swift \
   --out-dir "${SIMPLE_TMP}" \
   --module-path "${REPO_ROOT}/demo/simple-module/spacetimedb" \
   --no-config
 
 echo "==> Regenerating ninja-game Swift bindings"
-cargo run -q -p spacetimedb-cli --manifest-path "${REPO_ROOT}/Cargo.toml" -- \
-  generate \
+"${GENERATE_CMD[@]}" \
   --lang swift \
   --out-dir "${NINJA_TMP}" \
   --module-path "${REPO_ROOT}/demo/ninja-game/spacetimedb" \

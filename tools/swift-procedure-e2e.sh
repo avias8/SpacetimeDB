@@ -49,8 +49,13 @@ spacetime publish \
   "${DB_NAME}"
 
 echo "==> Generating Swift bindings with in-repo CLI"
-cargo run -q -p spacetimedb-cli --manifest-path "${REPO_ROOT}/Cargo.toml" -- \
-  generate \
+if [[ "${CI:-}" == "true" ]]; then
+  GENERATE_CMD=(spacetime generate)
+else
+  GENERATE_CMD=(cargo run -q -p spacetimedb-cli --manifest-path "${REPO_ROOT}/Cargo.toml" -- generate)
+fi
+
+"${GENERATE_CMD[@]}" \
   --lang swift \
   --out-dir "${GENERATED_DIR}" \
   --module-path "${MODULE_ABS}" \
