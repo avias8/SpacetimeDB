@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.22.0 - Unreleased
+## 0.22.0 - 2026-07-17
 
 - Reassemble fragmented WebSocket messages, including large subscription snapshots.
 - Validate HTTP upgrades, selected subprotocols, frame structure, and control-frame rules.
