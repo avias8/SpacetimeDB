@@ -1,72 +1,50 @@
-# Swift SDK Publishing Guide
+# Publishing Guide
 
-This guide prepares the Swift SDK for public Apple ecosystem consumption.
+`spacetimedb-swift` is already structured as a standalone Swift package and is indexed by Swift Package Index. No monorepo mirroring step is required.
 
-## Scope
+## Package Contents
 
-- DocC documentation and tutorials
-- Swift Package Index submission
-- Apple platform CI confidence (macOS + iOS simulator; visionOS not targeted yet)
-- mirror repository release process for public SPM consumption
+- Runtime library: `Sources/SpacetimeDB`
+- Unit and opt-in live tests: `Tests/SpacetimeDBTests`
+- DocC catalog: `Sources/SpacetimeDB/SpacetimeDB.docc`
+- Isolated performance tooling: `Benchmarks`
+- Swift Package Index configuration: `.spi.yml`
 
-## Important Packaging Constraint
+The root manifest must remain dependency-free. Dependencies used only for benchmarking belong in `Benchmarks/Package.swift` so they are never resolved by SDK consumers.
 
-The monorepo root is not a Swift package root. To publish as an SPM dependency and submit to Swift Package Index, use a dedicated package repository with the Swift SDK directory contents at repository root.
+## Documentation
 
-Detailed distribution runbook:
-
-- `sdks/swift/DISTRIBUTION.md`
-
-Mirror/release automation:
-
-- `tools/swift-package-mirror.sh`
-
-Operational checklist for SPI submission + badge verification:
-
-- `sdks/swift/SPI_SUBMISSION_CHECKLIST.md`
-
-## DocC
-
-DocC bundle location:
-
-- `Sources/SpacetimeDB/SpacetimeDB.docc`
-
-Build docs locally:
+Build DocC locally without adding a package dependency:
 
 ```bash
-tools/swift-docc-smoke.sh
+xcodebuild docbuild \
+  -scheme SpacetimeDB \
+  -destination 'generic/platform=macOS' \
+  CODE_SIGNING_ALLOWED=NO
 ```
 
-## Swift Package Index Submission
+Swift Package Index builds documentation for the `SpacetimeDB` target configured in `.spi.yml`.
 
-1. Ensure public repository URL is accessible.
-2. Push semantic version tag in the mirror repo (`vX.Y.Z`).
-3. Submit URL at [https://swiftpackageindex.com/add-a-package](https://swiftpackageindex.com/add-a-package).
-4. Verify docs generation and badge endpoints:
-   - Swift versions badge
-   - Supported platforms badge
+## CI
 
-## CI Matrix
+`.github/workflows/ci.yml` validates:
 
-The Swift SDK workflow should include:
+- macOS unit tests, Thread Sanitizer, release build, and DocC
+- iOS 18 simulator compilation
+- visionOS 2 simulator compilation
+- watchOS 11 simulator compilation
+- benchmark package manifest resolution
+- a clean tracked worktree after validation
 
-- macOS quality run: tests, lockfile validation, docs smoke, demos, benchmark smoke
-- iOS simulator compile run for `SpacetimeDB` target
-- explicit guard that visionOS is not targeted yet (`.visionOS(...)` absent in `Package.swift`)
+## Release
 
-Current workflow file:
+Use `DISTRIBUTION.md` for the exact preflight, tag, push, and verification commands. Use `SPI_SUBMISSION_CHECKLIST.md` for package-index verification.
 
-- `.github/workflows/swift-sdk.yml`
+Consumer dependency:
 
-## Release Checklist
-
-- `swift test --package-path sdks/swift`
-- `swift package --package-path sdks/swift resolve --force-resolved-versions`
-- `tools/swift-benchmark-smoke.sh`
-- `tools/swift-benchmark-baseline.sh <machine-profile-baseline-name>`
-- `tools/swift-docc-smoke.sh`
-- CI matrix green on PR and default branch
-- `tools/swift-package-mirror.sh sync --mirror <mirror-repo-path>`
-- `tools/swift-package-mirror.sh release --mirror <mirror-repo-path> --version <X.Y.Z> --push`
-- Submit mirror repo URL to Swift Package Index
-- Verify SPI package page + docs + badge URLs
+```swift
+.package(
+    url: "https://github.com/avias8/spacetimedb-swift.git",
+    from: "0.22.0"
+)
+```

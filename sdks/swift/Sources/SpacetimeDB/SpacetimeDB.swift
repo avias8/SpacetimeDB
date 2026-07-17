@@ -74,21 +74,18 @@ public enum ConnectionState: Sendable, Equatable {
     case reconnecting
 }
 
-public final class SubscriptionHandle: @unchecked Sendable {
-    private struct UnsafeSendable<Value>: @unchecked Sendable {
-        var value: Value
-    }
-
+public final class SubscriptionHandle: Sendable {
     private struct State {
+        weak var client: SpacetimeClient?
         var state: SubscriptionState = .pending
         var querySetId: QuerySetId?
         var requestId: RequestId?
-        var onApplied: UnsafeSendable<(() -> Void)?> = UnsafeSendable(value: nil)
-        var onError: UnsafeSendable<((String) -> Void)?> = UnsafeSendable(value: nil)
+        var onApplied: (@MainActor @Sendable () -> Void)?
+        var onError: (@MainActor @Sendable (String) -> Void)?
     }
 
     public let queries: [String]
-    private let stateLock: Mutex<State> = Mutex(State())
+    private let stateLock: Mutex<State>
 
     public var state: SubscriptionState {
         stateLock.withLock { state in
@@ -108,24 +105,18 @@ public final class SubscriptionHandle: @unchecked Sendable {
         }
     }
     
-    weak var client: SpacetimeClient?
-
     init(
         queries: [String],
         client: SpacetimeClient,
-        onApplied: (() -> Void)?,
-        onError: ((String) -> Void)?
+        onApplied: (@MainActor @Sendable () -> Void)?,
+        onError: (@MainActor @Sendable (String) -> Void)?
     ) {
         self.queries = queries
-        self.client = client
-        stateLock.withLock { state in
-            state.onApplied.value = onApplied
-            state.onError.value = onError
-        }
+        self.stateLock = Mutex(State(client: client, onApplied: onApplied, onError: onError))
     }
 
     public func unsubscribe(sendDroppedRows: Bool = false) {
-        client?.unsubscribe(self, sendDroppedRows: sendDroppedRows)
+        stateLock.withLock { $0.client }?.unsubscribe(self, sendDroppedRows: sendDroppedRows)
     }
 
     func markPending(requestId: RequestId, querySetId: QuerySetId) {
@@ -141,12 +132,14 @@ public final class SubscriptionHandle: @unchecked Sendable {
             state.requestId = nil
             state.querySetId = querySetId
             state.state = .active
-            return state.onApplied.value
+            return state.onApplied
         }
         
         if let applied {
             if Thread.isMainThread {
-                applied()
+                MainActor.assumeIsolated {
+                    applied()
+                }
             } else {
                 Task { @MainActor in
                     applied()
@@ -158,15 +151,17 @@ public final class SubscriptionHandle: @unchecked Sendable {
     func markError(_ message: String) {
         let error = stateLock.withLock { state in
             state.state = .ended
-            let callback = state.onError.value
-            state.onApplied.value = nil
-            state.onError.value = nil
+            let callback = state.onError
+            state.onApplied = nil
+            state.onError = nil
             return callback
         }
         
         if let error {
             if Thread.isMainThread {
-                error(message)
+                MainActor.assumeIsolated {
+                    error(message)
+                }
             } else {
                 Task { @MainActor in
                     error(message)
@@ -180,8 +175,9 @@ public final class SubscriptionHandle: @unchecked Sendable {
             state.state = .ended
             state.requestId = nil
             state.querySetId = nil
-            state.onApplied.value = nil
-            state.onError.value = nil
+            state.onApplied = nil
+            state.onError = nil
+            state.client = nil
         }
     }
 }

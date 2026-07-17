@@ -30,5 +30,5 @@ Native Swift SDK for SpacetimeDB realtime clients on Apple platforms.
 
 ## Publishing
 
-- [Publishing DocC and Submitting to Swift Package Index](doc:Publishing-and-Swift-Package-Index)
+- [Publishing DocC and Swift Package Index Releases](doc:Publishing-and-Swift-Package-Index)
 - [Apple CI Matrix (macOS, iOS Simulator)](doc:Apple-CI-Matrix)

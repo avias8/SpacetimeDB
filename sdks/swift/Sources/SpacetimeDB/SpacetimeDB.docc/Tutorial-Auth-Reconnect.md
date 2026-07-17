@@ -52,4 +52,4 @@ let client = SpacetimeClient(
 
 ## Next
 
-- [Publishing DocC and Submitting to Swift Package Index](doc:Publishing-and-Swift-Package-Index)
+- [Publishing DocC and Swift Package Index Releases](doc:Publishing-and-Swift-Package-Index)

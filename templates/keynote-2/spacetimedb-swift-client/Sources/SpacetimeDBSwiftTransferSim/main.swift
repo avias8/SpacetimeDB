@@ -377,7 +377,7 @@ func runSeed(common: CommonOptions, seed: SeedOptions) async throws {
     let client = setup.client
     _ = setup.delegate
 
-    await MainActor.run { SpacetimeClient.clientCache = ClientCache() }
+    SpacetimeClient.clientCache.clear()
     await MainActor.run { client.connect() }
     try await waitForConnected(client, timeoutSeconds: 20)
 
@@ -421,7 +421,7 @@ func runBench(common: CommonOptions, bench: BenchOptions) async throws {
     delegates.reserveCapacity(bench.connections)
     counters.reserveCapacity(bench.connections)
 
-    await MainActor.run { SpacetimeClient.clientCache = ClientCache() }
+    SpacetimeClient.clientCache.clear()
 
     for _ in 0..<bench.connections {
         let counter = CompletionCounter()

@@ -377,6 +377,17 @@ let benchmarks: @Sendable () -> Void = {
         }
     }
 
+    Benchmark("Cache Bulk Insert 1000 rows") { benchmark in
+        let encoder = BSATNEncoder()
+        let rows = (0..<1000).map { i in
+            try! encoder.encode(Point3D(x: Float(i), y: Float(i), z: Float(i)))
+        }
+        for _ in benchmark.scaledIterations {
+            let cache = TableCache<Point3D>(tableName: "bench")
+            try! cache.handleBulkInsert(rowBytesList: rows)
+        }
+    }
+
     Benchmark("Cache Delete 500 rows from full") { benchmark in
         let encoder = BSATNEncoder()
         let rows = (0..<500).map { i in

@@ -415,7 +415,7 @@ final class NetworkTests: XCTestCase {
             try await client.oneOffQuery("SELECT * FROM player", timeout: .seconds(5))
         }
 
-        await Task.yield()
+        await waitForPendingOneOffQueryCallback(on: client)
         task.cancel()
 
         do {
@@ -466,7 +466,7 @@ final class NetworkTests: XCTestCase {
             try await client.sendProcedure("raw_echo", Data())
         }
 
-        await Task.yield()
+        await waitForPendingProcedureCallback(on: client)
         client.handleProcedureResult(
             ProcedureResult(
                 status: .returned(expectedData),
@@ -500,7 +500,7 @@ final class NetworkTests: XCTestCase {
             try await client.sendProcedure("slow", Data(), timeout: .seconds(5))
         }
 
-        await Task.yield()
+        await waitForPendingProcedureCallback(on: client)
         task.cancel()
 
         do {
@@ -524,7 +524,7 @@ final class NetworkTests: XCTestCase {
             try await client.sendProcedure("say_hello", Data(), responseType: String.self)
         }
 
-        await Task.yield()
+        await waitForPendingProcedureCallback(on: client)
         client.handleProcedureResult(
             ProcedureResult(
                 status: .returned(encoded),
@@ -552,7 +552,7 @@ final class NetworkTests: XCTestCase {
             )
         }
 
-        await Task.yield()
+        await waitForPendingProcedureCallback(on: client)
         client.handleProcedureResult(
             ProcedureResult(
                 status: .returned(encoded),
@@ -676,6 +676,24 @@ final class NetworkTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error type: \(error)")
         }
+    }
+
+    @MainActor
+    private func waitForPendingProcedureCallback(on client: SpacetimeClient) async {
+        for _ in 0..<100 {
+            if client._test_pendingProcedureCallbackCount() == 1 { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Timed out waiting for the procedure callback to register.")
+    }
+
+    @MainActor
+    private func waitForPendingOneOffQueryCallback(on client: SpacetimeClient) async {
+        for _ in 0..<100 {
+            if client._test_pendingOneOffQueryCallbackCount() == 1 { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Timed out waiting for the one-off query callback to register.")
     }
 
     private func compressWithCompressionStream(_ payload: Data, algorithm: compression_algorithm) throws -> Data {

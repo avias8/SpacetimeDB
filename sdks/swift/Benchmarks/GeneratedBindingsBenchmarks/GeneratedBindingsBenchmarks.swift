@@ -213,4 +213,11 @@ let benchmarks: @Sendable () -> Void = {
             }
         }
     }
+
+    Benchmark("Generated Cache Bulk Insert 1000 rows (BSATNSpecial)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            let cache = TableCache<GeneratedPlayerSpecial>(tableName: "generated.players.special")
+            try! cache.handleBulkInsert(rowBytesList: cacheRowsSpecial)
+        }
+    }
 }

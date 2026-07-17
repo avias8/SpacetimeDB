@@ -2,6 +2,10 @@
 
 Native Swift SDK for connecting to SpacetimeDB over `v2.bsatn.spacetimedb`, decoding realtime updates, and maintaining a typed local cache.
 
+[![Swift Package Index](https://img.shields.io/badge/Swift%20Package%20Index-spacetimedb--swift-orange)](https://swiftpackageindex.com/avias8/spacetimedb-swift)
+[![Swift Versions](https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/avias8/spacetimedb-swift/badge?type=swift-versions)](https://swiftpackageindex.com/avias8/spacetimedb-swift)
+[![Platforms](https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/avias8/spacetimedb-swift/badge?type=platforms)](https://swiftpackageindex.com/avias8/spacetimedb-swift)
+
 ## Contents
 
 - [Requirements](#requirements)
@@ -17,22 +21,23 @@ Native Swift SDK for connecting to SpacetimeDB over `v2.bsatn.spacetimedb`, deco
 - [Logging](#logging)
 - [Benchmarks](#benchmarks)
 - [Validation Matrix](#validation-matrix)
-- [Examples](#examples)
+- [License](#license)
 
 ## Requirements
 
 - Swift tools `6.2`
 - Apple platforms:
   - macOS `15+`
-  - iOS `17+`
-  - visionOS: not supported yet
+  - iOS `18+`
+  - visionOS `2+`
+  - watchOS `11+`
 
 ## Package Layout
 
 ```text
-sdks/swift
+spacetimedb-swift
 ├── Package.swift
-├── Benchmarks/SpacetimeDBBenchmarks
+├── Benchmarks/Package.swift
 ├── Sources/SpacetimeDB
 │   ├── Auth/KeychainTokenStore.swift
 │   ├── BSATN/
@@ -46,17 +51,33 @@ sdks/swift
 
 ## Add The SDK To A Swift Package
 
-From a local checkout:
+From GitHub releases (recommended):
 
 ```swift
 dependencies: [
-    .package(name: "SpacetimeDB", path: "../../../sdks/swift"),
+    .package(url: "https://github.com/avias8/spacetimedb-swift.git", from: "0.22.0"),
 ],
 targets: [
     .executableTarget(
         name: "MyClient",
         dependencies: [
-            .product(name: "SpacetimeDB", package: "SpacetimeDB"),
+            .product(name: "SpacetimeDB", package: "spacetimedb-swift"),
+        ]
+    ),
+]
+```
+
+From a local checkout:
+
+```swift
+dependencies: [
+    .package(path: "../spacetimedb-swift"),
+],
+targets: [
+    .executableTarget(
+        name: "MyClient",
+        dependencies: [
+            .product(name: "SpacetimeDB", package: "spacetimedb-swift"),
         ]
     ),
 ]
@@ -188,7 +209,7 @@ SpacetimeModule.registerTables()
 let people = PersonTable.cache.rows
 ```
 
-The SDK applies transaction updates into `SpacetimeClient.clientCache` and table caches are updated on the main actor.
+The SDK applies transaction updates into `SpacetimeClient.clientCache`. Internal cache mutation remains off the main actor; observable `rows` snapshots are coalesced and published on the main actor for SwiftUI safety.
 
 ## Auth Token Persistence (Keychain)
 
@@ -238,55 +259,53 @@ let client = SpacetimeClient(
 
 The Swift package is validated in CI for reproducibility and packaging health:
 
-- `swift test --package-path sdks/swift`
-- `swift package --package-path sdks/swift resolve --force-resolved-versions`
-- demo package builds
-- benchmark smoke run
-
-Dependency versions are pinned in `sdks/swift/Package.resolved` to avoid accidental drift.
-
-For public SPM/SPI distribution from this monorepo, use the mirror runbook and automation:
-
-- `sdks/swift/DISTRIBUTION.md`
-- `tools/swift-package-mirror.sh`
+- `swift test`
+- `swift test --sanitize=thread`
+- `swift build -c release`
+- iOS, visionOS, and watchOS simulator cross-builds
+- an isolated benchmark package that does not add dependencies to SDK consumers
 
 ## DocC and Swift Package Index
 
 DocC bundle and tutorials live in:
 
-- `sdks/swift/Sources/SpacetimeDB/SpacetimeDB.docc`
+- `Sources/SpacetimeDB/SpacetimeDB.docc`
 
 DocC build command:
 
 ```bash
-tools/swift-docc-smoke.sh
+xcodebuild docbuild \
+  -scheme SpacetimeDB \
+  -destination 'generic/platform=macOS' \
+  CODE_SIGNING_ALLOWED=NO
 ```
 
 Swift Package Index builder config is in:
 
-- `sdks/swift/.spi.yml`
+- `.spi.yml`
 
 Detailed publishing runbook:
 
-- `sdks/swift/PUBLISHING.md`
-- `sdks/swift/DISTRIBUTION.md`
-- `sdks/swift/SPI_SUBMISSION_CHECKLIST.md`
+- `PUBLISHING.md`
+- `DISTRIBUTION.md`
+- `SPI_SUBMISSION_CHECKLIST.md`
 
-Swift Package Index link and badge templates (replace `<owner>/<repo>` with mirror coordinates):
+Package page and badge endpoints:
 
 ```text
-Package: https://swiftpackageindex.com/<owner>/<repo>
-Swift versions badge: https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/<owner>/<repo>/badge?type=swift-versions
-Platforms badge: https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/<owner>/<repo>/badge?type=platforms
+Package: https://swiftpackageindex.com/avias8/spacetimedb-swift
+Swift versions badge: https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/avias8/spacetimedb-swift/badge?type=swift-versions
+Platforms badge: https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/avias8/spacetimedb-swift/badge?type=platforms
 ```
 
 ## Apple CI Matrix
 
-Swift CI runs as a platform matrix in `.github/workflows/swift-sdk.yml`:
+Swift CI runs from `.github/workflows/ci.yml`:
 
-- `macOS`: tests, lockfile validation, demos, benchmark smoke, DocC build
-- `iOS simulator`: cross-build of `SpacetimeDB` target
-- `visionOS`: intentionally not targeted yet; CI asserts `.visionOS(...)` is absent in `Package.swift`
+- `macOS`: build, unit tests, Thread Sanitizer, and DocC
+- `iOS simulator`: cross-build of `SpacetimeDB`
+- `visionOS simulator`: cross-build of `SpacetimeDB`
+- `watchOS simulator`: cross-build of `SpacetimeDB`
 
 ## Logging
 
@@ -312,32 +331,22 @@ Includes suites for:
 Run from repo root:
 
 ```bash
-swift package --package-path sdks/swift benchmark --target SpacetimeDBBenchmarks
+swift package --package-path Benchmarks benchmark --target SpacetimeDBBenchmarks
 ```
 
 List available benchmarks:
 
 ```bash
-swift package --package-path sdks/swift benchmark list
-```
-
-Run fast smoke benchmarks (used by CI):
-
-```bash
-tools/swift-benchmark-smoke.sh
-```
-
-Capture a named reproducible baseline (raw + summary + machine metadata):
-
-```bash
-tools/swift-benchmark-baseline.sh macos-arm64-14.4-swift6.2
+swift package --package-path Benchmarks benchmark list
 ```
 
 Compare two captured baselines:
 
 ```bash
-cd sdks/swift
-swift package benchmark baseline compare <baseline-a> <baseline-b> --target SpacetimeDBBenchmarks --no-progress
+swift package --package-path Benchmarks benchmark baseline compare \
+  <baseline-a> <baseline-b> \
+  --target SpacetimeDBBenchmarks \
+  --no-progress
 ```
 
 ## Validation Matrix
@@ -345,18 +354,14 @@ swift package benchmark baseline compare <baseline-a> <baseline-b> --target Spac
 From repo root:
 
 ```bash
-swift test --package-path sdks/swift
-swift build --package-path sdks/swift
-swift build --package-path demo/simple-module/client-swift
-swift build --package-path demo/ninja-game/client-swift
-swift package --package-path sdks/swift resolve --force-resolved-versions
-swift package --package-path sdks/swift benchmark list
-swift package --package-path sdks/swift benchmark --target SpacetimeDBBenchmarks
-tools/swift-benchmark-smoke.sh
-tools/swift-docc-smoke.sh
+swift test
+swift test --sanitize=thread
+swift build -c release
+swift package --package-path Benchmarks benchmark list
+swift package --package-path Benchmarks benchmark --target SpacetimeDBBenchmarks
+xcodebuild docbuild -scheme SpacetimeDB -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
 
-## Examples
+## License
 
-- `demo/simple-module/client-swift`
-- `demo/ninja-game/client-swift`
+This package carries the SpacetimeDB Business Source License 1.1 terms in `LICENSE.txt`. Review that file before production use.

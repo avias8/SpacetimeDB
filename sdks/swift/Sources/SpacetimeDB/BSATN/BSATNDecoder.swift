@@ -13,28 +13,35 @@ public struct BSATNReader: ~Copyable {
     public let buffer: UnsafeRawBufferPointer
     public var offset: Int = 0
     
+    @inlinable @inline(__always)
     public init(buffer: UnsafeRawBufferPointer, offset: Int = 0) {
         self.buffer = buffer
         self.offset = offset
     }
     
+    @inlinable @inline(__always)
     public var isAtEnd: Bool {
         return offset >= buffer.count
     }
     
+    @inlinable @inline(__always)
     public var remaining: Int {
         return max(0, buffer.count - offset)
     }
     
+    @inlinable @inline(__always)
     public mutating func readBytes(count: Int) throws(BSATNDecodingError) -> Data {
-        guard offset + count <= buffer.count else {
+        guard offset >= 0, offset <= buffer.count,
+              count >= 0, count <= buffer.count - offset else {
             throw .unexpectedEndOfData
         }
-        let bytes = Data(buffer[offset..<(offset + count)])
+        guard count > 0 else { return Data() }
+        let bytes = Data(bytes: buffer.baseAddress!.advanced(by: offset), count: count)
         offset += count
         return bytes
     }
     
+    @inlinable @inline(__always)
     public mutating func read<T: FixedWidthInteger>(_ type: T.Type) throws(BSATNDecodingError) -> T {
         let size = MemoryLayout<T>.size
         guard offset + size <= buffer.count else {
@@ -45,6 +52,7 @@ public struct BSATNReader: ~Copyable {
         return T(littleEndian: value)
     }
 
+    @inlinable @inline(__always)
     public mutating func readU8() throws(BSATNDecodingError) -> UInt8 {
         guard offset + 1 <= buffer.count else { throw .unexpectedEndOfData }
         let val = buffer[offset]
@@ -52,6 +60,7 @@ public struct BSATNReader: ~Copyable {
         return val
     }
 
+    @inlinable @inline(__always)
     public mutating func readU16() throws(BSATNDecodingError) -> UInt16 {
         guard offset + 2 <= buffer.count else { throw .unexpectedEndOfData }
         let val = buffer.loadUnaligned(fromByteOffset: offset, as: UInt16.self)
@@ -59,6 +68,7 @@ public struct BSATNReader: ~Copyable {
         return UInt16(littleEndian: val)
     }
 
+    @inlinable @inline(__always)
     public mutating func readU32() throws(BSATNDecodingError) -> UInt32 {
         guard offset + 4 <= buffer.count else { throw .unexpectedEndOfData }
         let val = buffer.loadUnaligned(fromByteOffset: offset, as: UInt32.self)
@@ -66,6 +76,7 @@ public struct BSATNReader: ~Copyable {
         return UInt32(littleEndian: val)
     }
 
+    @inlinable @inline(__always)
     public mutating func readU64() throws(BSATNDecodingError) -> UInt64 {
         guard offset + 8 <= buffer.count else { throw .unexpectedEndOfData }
         let val = buffer.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
@@ -73,6 +84,7 @@ public struct BSATNReader: ~Copyable {
         return UInt64(littleEndian: val)
     }
 
+    @inlinable @inline(__always)
     public mutating func readI8() throws(BSATNDecodingError) -> Int8 {
         guard offset + 1 <= buffer.count else { throw .unexpectedEndOfData }
         let val = Int8(bitPattern: buffer[offset])
@@ -80,6 +92,7 @@ public struct BSATNReader: ~Copyable {
         return val
     }
 
+    @inlinable @inline(__always)
     public mutating func readI16() throws(BSATNDecodingError) -> Int16 {
         guard offset + 2 <= buffer.count else { throw .unexpectedEndOfData }
         let val = buffer.loadUnaligned(fromByteOffset: offset, as: Int16.self)
@@ -87,6 +100,7 @@ public struct BSATNReader: ~Copyable {
         return Int16(littleEndian: val)
     }
 
+    @inlinable @inline(__always)
     public mutating func readI32() throws(BSATNDecodingError) -> Int32 {
         guard offset + 4 <= buffer.count else { throw .unexpectedEndOfData }
         let val = buffer.loadUnaligned(fromByteOffset: offset, as: Int32.self)
@@ -94,6 +108,7 @@ public struct BSATNReader: ~Copyable {
         return Int32(littleEndian: val)
     }
 
+    @inlinable @inline(__always)
     public mutating func readI64() throws(BSATNDecodingError) -> Int64 {
         guard offset + 8 <= buffer.count else { throw .unexpectedEndOfData }
         let val = buffer.loadUnaligned(fromByteOffset: offset, as: Int64.self)
@@ -101,6 +116,7 @@ public struct BSATNReader: ~Copyable {
         return Int64(littleEndian: val)
     }
     
+    @inlinable @inline(__always)
     public mutating func readDouble() throws(BSATNDecodingError) -> Double {
         guard offset + 8 <= buffer.count else {
             throw .unexpectedEndOfData
@@ -110,6 +126,7 @@ public struct BSATNReader: ~Copyable {
         return Double(bitPattern: UInt64(littleEndian: bits))
     }
 
+    @inlinable @inline(__always)
     public mutating func readFloat() throws(BSATNDecodingError) -> Float {
         guard offset + 4 <= buffer.count else {
             throw .unexpectedEndOfData
@@ -119,6 +136,7 @@ public struct BSATNReader: ~Copyable {
         return Float(bitPattern: UInt32(littleEndian: bits))
     }
 
+    @inlinable @inline(__always)
     public mutating func readString() throws -> String {
         let length = Int(try readU32())
         guard offset + length <= buffer.count else {
@@ -130,6 +148,7 @@ public struct BSATNReader: ~Copyable {
         return string
     }
 
+    @inlinable @inline(__always)
     public mutating func readBool() throws(BSATNDecodingError) -> Bool {
         let byte = try read(UInt8.self)
         switch byte {
@@ -236,7 +255,16 @@ class BSATNReaderWrapper {
 
 @_documentation(visibility: internal)
 public final class BSATNDecoder: Sendable {
+    @inlinable @inline(__always)
     public init() {}
+
+    @inlinable @inline(__always)
+    public func decode<T: Decodable & BSATNSpecialDecodable>(_ type: T.Type, from data: Data) throws -> T {
+        try data.withUnsafeBytes { buffer in
+            var reader = BSATNReader(buffer: buffer)
+            return try T.decodeBSATN(from: &reader)
+        }
+    }
     
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         return try data.withUnsafeBytes { buffer in
@@ -510,9 +538,72 @@ struct SingleValueBSATNDecodingContainer: SingleValueDecodingContainer {
     }
 }
 
+#if compiler(>=6.2)
+@_documentation(visibility: internal)
+public protocol BSATNSpecialDecodable: SendableMetatype {
+    static func decodeBSATN(from reader: inout BSATNReader) throws -> Self
+}
+#else
 @_documentation(visibility: internal)
 public protocol BSATNSpecialDecodable {
     static func decodeBSATN(from reader: inout BSATNReader) throws -> Self
+}
+#endif
+
+extension Bool: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Bool { try reader.readBool() }
+}
+
+extension String: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> String { try reader.readString() }
+}
+
+extension Int: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Int { Int(try reader.readI64()) }
+}
+
+extension Int8: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Int8 { try reader.readI8() }
+}
+
+extension Int16: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Int16 { try reader.readI16() }
+}
+
+extension Int32: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Int32 { try reader.readI32() }
+}
+
+extension Int64: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Int64 { try reader.readI64() }
+}
+
+extension UInt: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> UInt { UInt(try reader.readU64()) }
+}
+
+extension UInt8: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> UInt8 { try reader.readU8() }
+}
+
+extension UInt16: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> UInt16 { try reader.readU16() }
+}
+
+extension UInt32: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> UInt32 { try reader.readU32() }
+}
+
+extension UInt64: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> UInt64 { try reader.readU64() }
+}
+
+extension Float: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Float { try reader.readFloat() }
+}
+
+extension Double: BSATNSpecialDecodable {
+    public static func decodeBSATN(from reader: inout BSATNReader) throws -> Double { try reader.readDouble() }
 }
 
 extension Array: BSATNSpecialDecodable where Element: Decodable {
