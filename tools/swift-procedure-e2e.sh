@@ -69,6 +69,11 @@ if [[ ! -f "${GENERATED_PROCEDURE_FILE}" ]]; then
   exit 1
 fi
 
+# The runner compiles SDK and generated sources as one module, so the generated
+# file must not import the module that is still being built.
+sed -i.bak '/^import SpacetimeDB$/d' "${GENERATED_PROCEDURE_FILE}"
+rm -f "${GENERATED_PROCEDURE_FILE}.bak"
+
 RUNNER_FILE="${OUT_ROOT}/runner.swift"
 RUNNER_BIN="${OUT_ROOT}/runner-bin"
 
