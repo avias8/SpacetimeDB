@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(path: ".."),
+        .package(name: "spacetimedb-swift", path: ".."),
         .package(
             url: "https://github.com/ordo-one/benchmark",
             from: "1.30.0",
