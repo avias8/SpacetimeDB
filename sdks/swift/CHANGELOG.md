@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.0 - 2026-07-17
+
+- Update the Swift SDK release line for compatibility with SpacetimeDB 2.7.0.
+- Preserve Swift code generation and CLI language detection across the 2.7.0 upstream merge.
+- Preserve generated Ninja, simple-module, and keynote client compatibility.
+- Validate the Network.framework WebSocket transport and Swift 6 concurrency paths under Thread Sanitizer.
+- Validate all 83 package tests, with four opt-in live integration tests skipped by default.
+- Validate SDK, demo, keynote, DocC, benchmark, Rust codegen, and TypeScript integration checks.
+- Validate generated Swift procedure callbacks against a live SpacetimeDB 2.7.0 server.
+
 ## 0.22.0 - 2026-07-17
 
 - Reassemble fragmented WebSocket messages, including large subscription snapshots.
