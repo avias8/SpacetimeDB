@@ -154,7 +154,14 @@ impl Lang for Swift {
         writeln!(&mut code, "import Foundation").unwrap();
         writeln!(&mut code, "import simd").unwrap();
         writeln!(&mut code, "import SpacetimeDB\n").unwrap();
-        writeln!(&mut code, "public struct {}Table {{", table_name_pascal).unwrap();
+        writeln!(
+            &mut code,
+            "public struct {}Table: SpacetimeTableDescriptor {{",
+            table_name_pascal
+        )
+        .unwrap();
+        writeln!(&mut code, "    public typealias Row = {}", row_type).unwrap();
+        writeln!(&mut code, "    public static let tableName = \"{}\"\n", table_name).unwrap();
 
         // Expose a public cache accessor that UI can subscribe to
         writeln!(
@@ -169,25 +176,77 @@ impl Lang for Swift {
             table_name
         )
         .unwrap();
+        writeln!(&mut code, "    }}\n").unwrap();
+
+        writeln!(
+            &mut code,
+            "    public static func cache(in clientCache: ClientCache = SpacetimeClient.clientCache) -> TableCache<{}> {{",
+            row_type
+        )
+        .unwrap();
+        writeln!(
+            &mut code,
+            "        return clientCache.getTableCache(tableName: \"{}\")",
+            table_name
+        )
+        .unwrap();
         writeln!(&mut code, "    }}").unwrap();
 
         // Write the generic index mapping for any Unique constraints
         writeln!(&mut code, "}}").unwrap();
 
-        if let Some(pk_col) = table.primary_key {
+        let is_first_table_for_row = module
+            .tables()
+            .find(|t| t.product_type_ref == table.product_type_ref)
+            .map(|t| t.name.deref() == table_name)
+            .unwrap_or(true);
+
+        if is_first_table_for_row {
             if let AlgebraicTypeDef::Product(product) = &module.typespace_for_generate()[table.product_type_ref] {
-                let pk_field_name = product.elements[pk_col.idx() as usize].0.deref().to_case(Case::Camel);
-                let pk_swift_ty = get_swift_type_use(module, &product.elements[pk_col.idx() as usize].1);
-                if pk_field_name == "id" {
-                    writeln!(&mut code, "\nextension {}: Identifiable {{}}", row_type).unwrap();
-                } else {
+                if let Some(pk_col) = table.primary_key {
+                    let pk_field_name = product.elements[pk_col.idx() as usize].0.deref().to_case(Case::Camel);
+                    let pk_swift_ty = get_swift_type_use(module, &product.elements[pk_col.idx() as usize].1);
+                    if pk_field_name == "id" {
+                        writeln!(&mut code, "\nextension {}: Identifiable {{}}", row_type).unwrap();
+                    } else {
+                        writeln!(
+                            &mut code,
+                            "\nextension {}: Identifiable {{\n    public var id: {} {{\n        return self.{}\n    }}\n}}",
+                            row_type, pk_swift_ty, pk_field_name
+                        )
+                        .unwrap();
+                    }
                     writeln!(
                         &mut code,
-                        "\nextension {}: Identifiable {{\n    public var id: {} {{\n        return self.{}\n    }}\n}}",
+                        "\nextension {}: SpacetimePrimaryKeyRow {{\n    public var primaryKey: {} {{\n        return self.{}\n    }}\n}}",
                         row_type, pk_swift_ty, pk_field_name
                     )
                     .unwrap();
                 }
+
+                writeln!(&mut code, "\nextension {}: SpacetimeQueryableRow {{", row_type).unwrap();
+                writeln!(&mut code, "    public static let tableName = \"{}\"", table_name).unwrap();
+                writeln!(
+                    &mut code,
+                    "    public static func columnName(for keyPath: PartialKeyPath<{}>) -> String? {{",
+                    row_type
+                )
+                .unwrap();
+                writeln!(&mut code, "        switch keyPath {{").unwrap();
+                for (name, _ty) in &product.elements {
+                    let raw_col = name.deref();
+                    let field_name = raw_col.to_case(Case::Camel);
+                    writeln!(
+                        &mut code,
+                        "        case \\{}.{}: return \"{}\"",
+                        row_type, field_name, raw_col
+                    )
+                    .unwrap();
+                }
+                writeln!(&mut code, "        default: return nil").unwrap();
+                writeln!(&mut code, "        }}").unwrap();
+                writeln!(&mut code, "    }}").unwrap();
+                writeln!(&mut code, "}}").unwrap();
             }
         }
 
@@ -470,6 +529,14 @@ impl Lang for Swift {
             let swift_ty = get_swift_type_use(module, ty);
             write!(&mut code, "{}: {}", field_name, swift_ty).unwrap();
         }
+        if !first {
+            write!(&mut code, ", ").unwrap();
+        }
+        write!(
+            &mut code,
+            "client: SpacetimeClient? = SpacetimeClient.shared, optimisticChanges: [OptimisticRowChange] = []"
+        )
+        .unwrap();
         writeln!(&mut code, ") {{").unwrap();
 
         // Build the argument struct to encode
@@ -493,7 +560,7 @@ impl Lang for Swift {
         writeln!(&mut code, "            let argBytes = try BSATNEncoder().encode(args)").unwrap();
         writeln!(
             &mut code,
-            "            SpacetimeClient.shared?.send(\"{}\", argBytes)",
+            "            client?.send(\"{}\", argBytes, optimisticChanges: optimisticChanges)",
             reducer_name
         )
         .unwrap();
@@ -574,7 +641,7 @@ impl Lang for Swift {
         }
         write!(
             &mut code,
-            "callback: ((Result<{}, Error>) -> Void)? = nil",
+            "client: SpacetimeClient? = SpacetimeClient.shared, callback: ((Result<{}, Error>) -> Void)? = nil",
             callback_return_ty
         )
         .unwrap();
@@ -601,14 +668,14 @@ impl Lang for Swift {
         if return_is_unit {
             writeln!(
                 &mut code,
-                "                SpacetimeClient.shared?.sendProcedure(\"{}\", argBytes, decodeReturn: {{ _ in () }}, completion: callback)",
+                "                client?.sendProcedure(\"{}\", argBytes, decodeReturn: {{ _ in () }}, completion: callback)",
                 procedure_name
             )
             .unwrap();
         } else {
             writeln!(
                 &mut code,
-                "                SpacetimeClient.shared?.sendProcedure(\"{}\", argBytes, responseType: {}.self, completion: callback)",
+                "                client?.sendProcedure(\"{}\", argBytes, responseType: {}.self, completion: callback)",
                 procedure_name, return_swift_ty
             )
             .unwrap();
@@ -616,7 +683,7 @@ impl Lang for Swift {
         writeln!(&mut code, "            }} else {{").unwrap();
         writeln!(
             &mut code,
-            "                SpacetimeClient.shared?.sendProcedure(\"{}\", argBytes)",
+            "                client?.sendProcedure(\"{}\", argBytes)",
             procedure_name
         )
         .unwrap();
@@ -629,6 +696,63 @@ impl Lang for Swift {
         )
         .unwrap();
         writeln!(&mut code, "        }}").unwrap();
+        writeln!(&mut code, "    }}\n").unwrap();
+
+        write!(&mut code, "    @MainActor public static func invokeAsync(").unwrap();
+        first = true;
+        for (name, ty) in &procedure.params_for_generate.elements {
+            if !first {
+                write!(&mut code, ", ").unwrap();
+            }
+            first = false;
+            let field_name = name.deref().to_case(Case::Camel);
+            let swift_ty = get_swift_type_use(module, ty);
+            write!(&mut code, "{}: {}", field_name, swift_ty).unwrap();
+        }
+        if !procedure.params_for_generate.elements.is_empty() {
+            write!(&mut code, ", ").unwrap();
+        }
+        writeln!(
+            &mut code,
+            "client: SpacetimeClient? = SpacetimeClient.shared, timeout: Duration? = nil) async throws -> {} {{",
+            callback_return_ty
+        )
+        .unwrap();
+        writeln!(
+            &mut code,
+            "        guard let client else {{ throw SpacetimeClientProcedureError.clientDisconnected }}"
+        )
+        .unwrap();
+        writeln!(&mut code, "        let args = _Args(").unwrap();
+        first = true;
+        for (name, _ty) in &procedure.params_for_generate.elements {
+            if !first {
+                writeln!(&mut code, ",").unwrap();
+            }
+            first = false;
+            let field_name = name.deref().to_case(Case::Camel);
+            write!(&mut code, "            {}: {}", field_name, field_name).unwrap();
+        }
+        if !procedure.params_for_generate.elements.is_empty() {
+            writeln!(&mut code, "").unwrap();
+        }
+        writeln!(&mut code, "        )").unwrap();
+        writeln!(&mut code, "        let argBytes = try BSATNEncoder().encode(args)").unwrap();
+        if return_is_unit {
+            writeln!(
+                &mut code,
+                "        _ = try await client.sendProcedure(\"{}\", argBytes, timeout: timeout)",
+                procedure_name
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                &mut code,
+                "        return try await client.sendProcedure(\"{}\", argBytes, responseType: {}.self, timeout: timeout)",
+                procedure_name, return_swift_ty
+            )
+            .unwrap();
+        }
         writeln!(&mut code, "    }}").unwrap();
         writeln!(&mut code, "}}").unwrap();
 
@@ -646,13 +770,17 @@ impl Lang for Swift {
         writeln!(&mut code, "import SpacetimeDB\n").unwrap();
 
         writeln!(&mut code, "public enum SpacetimeModule {{").unwrap();
-        writeln!(&mut code, "    @MainActor public static func registerTables() {{").unwrap();
+        writeln!(
+            &mut code,
+            "    @MainActor public static func registerTables(in cache: ClientCache = SpacetimeClient.clientCache) {{"
+        )
+        .unwrap();
         // Register all tables
         for (table_name, _accessor_name, product_type_ref) in iter_table_names_and_types(module, options.visibility) {
             let row_type = type_ref_name(module, product_type_ref);
             writeln!(
                 &mut code,
-                "        SpacetimeClient.clientCache.registerTable(tableName: \"{}\", rowType: {}.self)",
+                "        cache.registerTable(tableName: \"{}\", rowType: {}.self)",
                 table_name.deref(),
                 row_type
             )

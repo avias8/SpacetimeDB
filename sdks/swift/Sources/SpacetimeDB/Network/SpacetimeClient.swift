@@ -149,6 +149,26 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         withStateLock { _connectionState }
     }
 
+    private var connectionStateContinuations: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
+
+    /// An `AsyncStream` yielding the current `ConnectionState` and all subsequent state transitions.
+    public var connectionStates: AsyncStream<ConnectionState> {
+        AsyncStream { continuation in
+            let id = UUID()
+            let initial = withStateLock { () -> ConnectionState in
+                connectionStateContinuations[id] = continuation
+                return _connectionState
+            }
+            continuation.yield(initial)
+            continuation.onTermination = { @Sendable [weak self] _ in
+                guard let self else { return }
+                _ = self.withStateLock {
+                    self.connectionStateContinuations.removeValue(forKey: id)
+                }
+            }
+        }
+    }
+
     private static let sharedState: Mutex<SpacetimeClient?> = Mutex(nil)
     public static var shared: SpacetimeClient? {
         get { sharedState.withLock { $0 } }
@@ -157,9 +177,19 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
 
     public static let clientCache = ClientCache()
 
+    /// The `ClientCache` instance managed by this client. Defaults to `SpacetimeClient.clientCache`,
+    /// or can be passed explicitly in `init` to isolate multi-client or multi-database state.
+    public let cache: ClientCache
+
     private let transport: WebSocketTransport
     private let reconnectPolicy: ReconnectPolicy?
     private let compressionMode: CompressionMode
+    public let lightMode: Bool
+    public let confirmedReads: Bool?
+    private var _negotiatedProtocol: SpacetimeWireProtocol = .v2
+    public var negotiatedProtocol: SpacetimeWireProtocol {
+        withStateLock { _negotiatedProtocol }
+    }
     private var savedToken: String?
     private var reconnectAttempt = 0
     private var shouldStayConnected = false
@@ -184,6 +214,14 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     // Send queue — NWWebSocketTransport handles its own internal queuing but we maintain 
     // a simplified queue to preserve ordering and handle connection lifecycle.
     private var sendQueue: [Data] = []
+    /// Tables whose cached rows the next subscription rows replace (set on every connect).
+    private var tablesToRefresh: Set<String> = []
+    /// Request IDs of managed subscriptions replayed during the current reconnect pass.
+    private var pendingReconnectRequestIds: Set<RequestId> = []
+    /// Buffered `(querySetId, QueryRows)` payloads from replayed subscriptions awaiting full batch completion.
+    private var pendingReconnectQueryRows: [(querySetId: QuerySetId?, rows: QueryRows)] = []
+    /// Buffered incremental `TransactionUpdate`s received while a reconnect replay batch is still in flight.
+    private var pendingReconnectTransactionUpdates: [TransactionUpdate] = []
     private var isTransportReady = false
     private var networkMonitor: NetworkMonitor?
     private let keepAlivePingInterval: Duration
@@ -202,6 +240,10 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         moduleName: String,
         reconnectPolicy: ReconnectPolicy? = ReconnectPolicy(),
         compressionMode: CompressionMode = .gzip,
+        lightMode: Bool = false,
+        confirmedReads: Bool? = nil,
+        cache: ClientCache = SpacetimeClient.clientCache,
+        transport: WebSocketTransport? = nil,
         coalesceTransactionUpdateCallbacks: Bool = true,
         keepAlivePingIntervalSeconds: TimeInterval = 30.0,
         keepAlivePongTimeoutSeconds: TimeInterval = 10.0
@@ -210,13 +252,16 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         self.moduleName = moduleName
         self.reconnectPolicy = reconnectPolicy
         self.compressionMode = compressionMode
+        self.lightMode = lightMode
+        self.confirmedReads = confirmedReads
+        self.cache = cache
         self.coalesceTransactionUpdateCallbacks = coalesceTransactionUpdateCallbacks
         let boundedPingInterval = max(1.0, keepAlivePingIntervalSeconds)
         let boundedPongTimeout = max(1.0, min(keepAlivePongTimeoutSeconds, boundedPingInterval))
         self.keepAlivePingInterval = .milliseconds(Int64((boundedPingInterval * 1000).rounded()))
         self.keepAlivePongTimeout = .milliseconds(Int64((boundedPongTimeout * 1000).rounded()))
 
-        self.transport = NWWebSocketTransport()
+        self.transport = transport ?? NWWebSocketTransport()
         self.transport.delegate = self
     }
 
@@ -274,7 +319,14 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         )
         var components = URLComponents(url: serverUrl, resolvingAgainstBaseURL: false)!
         components.path = "/v1/database/\(moduleName)/subscribe"
-        components.queryItems = [URLQueryItem(name: "compression", value: compressionMode.queryValue)]
+        var queryItems = [URLQueryItem(name: "compression", value: compressionMode.queryValue)]
+        if lightMode {
+            queryItems.append(URLQueryItem(name: "light", value: "true"))
+        }
+        if let confirmedReads {
+            queryItems.append(URLQueryItem(name: "confirmed_reads", value: confirmedReads ? "true" : "false"))
+        }
+        components.queryItems = queryItems
         if components.scheme == "http" { components.scheme = "ws" }
         if components.scheme == "https" { components.scheme = "wss" }
 
@@ -285,6 +337,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
 
         let (procedureCallbacks, queryCallbacks) = withStateLock { () -> ([RequestId: (Result<Data, Error>) -> Void], [RequestId: (Result<QueryRows, Error>) -> Void]) in
             isTransportReady = false
+            _negotiatedProtocol = .v2
             sendQueue.removeAll()
             pendingReducerNames.removeAll()
             let procedureCallbacks = pendingProcedureCallbacks
@@ -294,8 +347,13 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
             pendingSubscriptionByRequestId.removeAll()
             pendingUnsubscribeByRequestId.removeAll()
             activeSubscriptionByQuerySetId.removeAll()
+            pendingReconnectRequestIds.removeAll()
+            pendingReconnectQueryRows.removeAll()
+            pendingReconnectTransactionUpdates.removeAll()
             return (procedureCallbacks, queryCallbacks)
         }
+
+        cache.revertAllOptimisticChanges()
 
         withIdStateLock {
             nextRequestId = RequestId(rawValue: 1)
@@ -311,7 +369,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         
         setConnectionState(isReconnect ? .reconnecting : .connecting)
         
-        transport.connect(to: components.url!, protocols: ["v2.bsatn.spacetimedb"], headers: headers)
+        transport.connect(to: components.url!, protocols: SpacetimeWireProtocol.preferredProtocols, headers: headers)
     }
 
     public func disconnect() {
@@ -320,6 +378,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
             reconnectTask?.cancel()
             reconnectTask = nil
             isTransportReady = false
+            _negotiatedProtocol = .v2
             sendQueue.removeAll()
             pendingReducerNames.removeAll()
             let procedureCallbacks = pendingProcedureCallbacks
@@ -329,11 +388,15 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
             pendingSubscriptionByRequestId.removeAll()
             pendingUnsubscribeByRequestId.removeAll()
             activeSubscriptionByQuerySetId.removeAll()
+            pendingReconnectRequestIds.removeAll()
+            pendingReconnectQueryRows.removeAll()
+            pendingReconnectTransactionUpdates.removeAll()
             let managed = managedSubscriptions.values
             managedSubscriptions.removeAll()
             return (procedureCallbacks, queryCallbacks, managed)
         }
         
+        cache.revertAllOptimisticChanges()
         stopNetworkMonitor()
         stopKeepAliveLoop()
         
@@ -378,23 +441,44 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     }
 
     private func flushQueue() {
-        let toSend: [Data] = withStateLock {
-            guard isTransportReady else {
-                return []
+        let (framesToSend, messageCount, shouldScheduleMore): ([Data], Int, Bool) = withStateLock {
+            guard isTransportReady, !sendQueue.isEmpty else {
+                return ([], 0, false)
             }
-            let data = sendQueue
-            sendQueue.removeAll()
-            return data
+            if _negotiatedProtocol == .v3 {
+                let validMessages = sendQueue.filter { !$0.isEmpty }
+                sendQueue = validMessages
+                guard !sendQueue.isEmpty,
+                      let batchCount = try? WebSocketV3Frames.countClientMessagesForFrame(sendQueue),
+                      batchCount > 0,
+                      let frame = try? WebSocketV3Frames.encodeClientMessages(Array(sendQueue[0..<batchCount])) else {
+                    sendQueue.removeAll()
+                    return ([], 0, false)
+                }
+                sendQueue.removeFirst(batchCount)
+                return ([frame], batchCount, !sendQueue.isEmpty)
+            } else {
+                let data = sendQueue
+                sendQueue.removeAll()
+                return (data, data.count, false)
+            }
         }
-        
-        for data in toSend {
-            emitCounter("spacetimedb.messages.out.count")
-            emitCounter("spacetimedb.messages.out.bytes", by: Int64(data.count))
-            
-            transport.send(data: data) { error in
+        guard !framesToSend.isEmpty else { return }
+
+        emitCounter("spacetimedb.messages.out.count", by: Int64(messageCount))
+        for frame in framesToSend {
+            emitCounter("spacetimedb.messages.out.bytes", by: Int64(frame.count))
+
+            transport.send(data: frame) { error in
                 if let error = error {
                     Log.network.error("Send error: \(error.localizedDescription)")
                 }
+            }
+        }
+
+        if shouldScheduleMore {
+            decodeQueue.async { [weak self] in
+                self?.flushQueue()
             }
         }
     }
@@ -417,10 +501,15 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         }
     }
 
-    public func send(_ reducerName: String, _ args: Data) {
+    public func send(_ reducerName: String, _ args: Data, optimisticChanges: [OptimisticRowChange] = []) {
         let requestId = allocateRequestId()
         withStateLock {
             pendingReducerNames[requestId] = reducerName
+        }
+        if !optimisticChanges.isEmpty {
+            cache.applyOptimisticChanges(requestId: requestId, changes: optimisticChanges)
+            notifyRawTransactionUpdateObservers()
+            notifyTransactionUpdate()
         }
         let call = CallReducer(requestId: requestId, flags: 0, reducer: reducerName, args: args)
         let message = ClientMessage.callReducer(call)
@@ -659,22 +748,17 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
             return
         }
         let queries = tables.map { "SELECT * FROM \($0)" }
-        let sub = Subscribe(
-            queryStrings: queries,
-            requestId: allocateRequestId(),
-            querySetId: allocateQuerySetId()
-        )
-        let message = ClientMessage.subscribe(sub)
-        send(message)
+        _ = subscribe(queries: queries)
     }
 
-    private func startSubscription(_ handle: SubscriptionHandle) {
+    @discardableResult
+    private func startSubscription(_ handle: SubscriptionHandle) -> RequestId? {
         guard !handle.queries.isEmpty else {
             handle.markError("Subscription requires at least one query.")
             _ = withStateLock {
                 managedSubscriptions.removeValue(forKey: ObjectIdentifier(handle))
             }
-            return
+            return nil
         }
 
         let requestId = allocateRequestId()
@@ -684,6 +768,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
             pendingSubscriptionByRequestId[requestId] = handle
         }
         send(ClientMessage.subscribe(Subscribe(queryStrings: handle.queries, requestId: requestId, querySetId: querySetId)))
+        return requestId
     }
 
     private func allocateRequestId() -> RequestId {
@@ -705,7 +790,9 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     // MARK: - WebSocketTransportDelegate
 
     public func webSocketTransportDidConnect() {
+        let negotiated = SpacetimeWireProtocol.normalize(transport.negotiatedProtocol)
         withStateLock {
+            _negotiatedProtocol = negotiated
             isTransportReady = true
         }
         flushQueue()
@@ -715,6 +802,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         withStateLock {
             isTransportReady = false
         }
+        cache.revertAllOptimisticChanges()
         if let error = error {
             handleConnectionFailure(error)
         } else {
@@ -736,18 +824,24 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         
         self.decodeQueue.async { [weak self] in
             guard let self = self else { return }
-            let decoded = Self.decodeServerMessage(from: data)
-            self.handleDecodedServerMessage(decoded)
+            let decoded = Self.decodeServerMessages(from: data)
+            switch decoded {
+            case .failure(let error):
+                self.handleDecodedServerMessage(.failure(error))
+            case .success(let messages):
+                for message in messages {
+                    self.handleDecodedServerMessage(.success(message))
+                }
+            }
         }
     }
 
     // MARK: - Message handling
 
-    nonisolated private static func decodeServerMessage(from data: Data) -> Result<ServerMessage, Error> {
+    nonisolated private static func decodeServerMessages(from data: Data) -> Result<[ServerMessage], Error> {
         do {
             let bsatnData = try ServerMessageFrameDecoder.decodePayload(from: data)
-            let decoder = BSATNDecoder()
-            return .success(try decoder.decode(ServerMessage.self, from: bsatnData))
+            return .success(try WebSocketV3Frames.decodeServerMessages(from: bsatnData))
         } catch {
             return .failure(error)
         }
@@ -770,19 +864,82 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
                 invokeDelegateCallback(named: "delegate.on_identity_received") {
                     $0.onIdentityReceived(identity: Array(connection.identity.rawBytes), token: connection.token)
                 }
-                subscribeAll(tables: Self.clientCache.registeredTableNames)
+                // Registering a table no longer subscribes to all of its rows: the app's own
+                // subscriptions (`subscribe(queries:)`) decide what the cache holds.
+                withStateLock {
+                    tablesToRefresh = Set(cache.registeredTableNames)
+                    pendingReconnectRequestIds.removeAll()
+                    pendingReconnectQueryRows.removeAll()
+                    pendingReconnectTransactionUpdates.removeAll()
+                }
                 resubscribeManagedSubscriptions()
                 invokeDelegateCallback(named: "delegate.on_connect") { $0.onConnect() }
             case .transactionUpdate(let update):
-                Self.clientCache.applyTransactionUpdate(update)
-                notifyRawTransactionUpdateObservers()
-                notifyTransactionUpdate()
+                let wasBuffered = withStateLock { () -> Bool in
+                    guard !pendingReconnectRequestIds.isEmpty else { return false }
+                    pendingReconnectTransactionUpdates.append(update)
+                    return true
+                }
+                if !wasBuffered {
+                    cache.applyTransactionUpdate(update)
+                    notifyRawTransactionUpdateObservers()
+                    notifyTransactionUpdate()
+                }
             case .subscribeApplied(let applied):
-                handleSubscribeApplied(applied)
-                let initial = applied.asTransactionUpdate()
-                Self.clientCache.applyTransactionUpdate(initial)
-                notifyRawTransactionUpdateObservers()
-                notifyTransactionUpdate()
+                let handle = handleSubscribeApplied(applied)
+                enum ReconnectDisposition {
+                    case waitingForMoreReplayedSubscriptions
+                    case completedReconnectBatch(querySets: [(querySetId: QuerySetId?, rows: QueryRows)], bufferedUpdates: [TransactionUpdate])
+                    case singleSubscription(staleTables: Set<String>)
+                }
+
+                var coveredNames = Set(applied.rows.tables.map { $0.table.rawValue })
+                if let handle {
+                    coveredNames.formUnion(Self.tableNames(in: handle.queries))
+                }
+
+                let disposition = withStateLock { () -> ReconnectDisposition in
+                    if pendingReconnectRequestIds.remove(applied.requestId) != nil {
+                        pendingReconnectQueryRows.append((querySetId: applied.querySetId, rows: applied.rows))
+                        if pendingReconnectRequestIds.isEmpty {
+                            let rows = pendingReconnectQueryRows
+                            let updates = pendingReconnectTransactionUpdates
+                            pendingReconnectQueryRows.removeAll()
+                            pendingReconnectTransactionUpdates.removeAll()
+                            tablesToRefresh.removeAll()
+                            return .completedReconnectBatch(querySets: rows, bufferedUpdates: updates)
+                        }
+                        return .waitingForMoreReplayedSubscriptions
+                    }
+
+                    let stale = coveredNames.intersection(tablesToRefresh)
+                    tablesToRefresh.subtract(stale)
+                    return .singleSubscription(staleTables: stale)
+                }
+
+                switch disposition {
+                case .waitingForMoreReplayedSubscriptions:
+                    break
+                case .completedReconnectBatch(let querySets, let bufferedUpdates):
+                    cache.reconcile(querySets: querySets)
+                    for buffered in bufferedUpdates {
+                        cache.applyTransactionUpdate(buffered)
+                    }
+                    notifyRawTransactionUpdateObservers()
+                    notifyTransactionUpdate()
+                case .singleSubscription(let staleTables):
+                    if staleTables.isEmpty {
+                        let initial = applied.asTransactionUpdate()
+                        cache.applyTransactionUpdate(initial)
+                    } else {
+                        cache.reconcile(
+                            querySets: [(querySetId: applied.querySetId, rows: applied.rows)],
+                            replacingTables: staleTables
+                        )
+                    }
+                    notifyRawTransactionUpdateObservers()
+                    notifyTransactionUpdate()
+                }
             case .reducerResult(let reducerResult):
                 handleReducerResult(reducerResult)
             case .other:
@@ -804,15 +961,20 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         let reducerName = withStateLock {
             pendingReducerNames.removeValue(forKey: reducerResult.requestId) ?? "<unknown>"
         }
-        
+
+        cache.revertOptimisticChanges(for: reducerResult.requestId)
+
         switch reducerResult.result {
         case .ok(let ok):
-            Self.clientCache.applyTransactionUpdate(ok.transactionUpdate)
+            cache.applyTransactionUpdate(ok.transactionUpdate)
             notifyRawTransactionUpdateObservers()
             notifyTransactionUpdate()
         case .okEmpty:
-            break
+            notifyRawTransactionUpdateObservers()
+            notifyTransactionUpdate()
         case .err(let errData):
+            notifyRawTransactionUpdateObservers()
+            notifyTransactionUpdate()
             let message: String
             if let decoded = try? decoder.decode(String.self, from: errData) {
                 message = decoded
@@ -826,6 +988,8 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
                 $0.onReducerError(reducer: reducerName, message: message, isInternal: false)
             }
         case .internalError(let message):
+            notifyRawTransactionUpdateObservers()
+            notifyTransactionUpdate()
             Log.client.error("Reducer request_id=\(reducerResult.requestId) internal error: \(message)")
             invokeDelegateCallback(named: "delegate.on_reducer_error") {
                 $0.onReducerError(reducer: reducerName, message: message, isInternal: true)
@@ -870,7 +1034,19 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         }
     }
 
-    func handleSubscribeApplied(_ applied: SubscribeApplied) {
+    /// The table names in `SELECT * FROM <table> ...` queries, so a table whose subscription
+    /// came back empty is still refreshed.
+    static func tableNames(in queries: [String]) -> Set<String> {
+        Set(queries.compactMap { q -> String? in
+            let words = q.split(whereSeparator: { $0.isWhitespace || $0 == ";" })
+            guard let i = words.firstIndex(where: { $0.uppercased() == "FROM" }), i + 1 < words.count else { return nil }
+            let raw = words[i + 1].trimmingCharacters(in: CharacterSet(charactersIn: "\"`"))
+            return raw.isEmpty ? nil : raw
+        })
+    }
+
+    @discardableResult
+    func handleSubscribeApplied(_ applied: SubscribeApplied) -> SubscriptionHandle? {
         let handle = withStateLock { () -> SubscriptionHandle? in
             let handle = pendingSubscriptionByRequestId.removeValue(forKey: applied.requestId)
             if let handle {
@@ -880,6 +1056,7 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
         }
         
         handle?.markApplied(querySetId: applied.querySetId)
+        return handle
     }
 
     func handleUnsubscribeApplied(_ applied: UnsubscribeApplied) {
@@ -897,7 +1074,11 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
 
         if let rows = applied.rows {
             let update = queryRowsToTransactionUpdate(rows, querySetId: applied.querySetId, asInserts: false)
-            Self.clientCache.applyTransactionUpdate(update)
+            cache.applyTransactionUpdate(update)
+            notifyRawTransactionUpdateObservers()
+            notifyTransactionUpdate()
+        } else {
+            cache.evictQuerySet(applied.querySetId)
             notifyRawTransactionUpdateObservers()
             notifyTransactionUpdate()
         }
@@ -944,30 +1125,66 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     }
 
     func handleSubscriptionError(_ error: SubscriptionError) {
-        let handle: SubscriptionHandle? = withStateLock {
-            if let requestId = error.requestId, let pending = pendingSubscriptionByRequestId.removeValue(forKey: requestId) {
-                managedSubscriptions.removeValue(forKey: ObjectIdentifier(pending))
-                return pending
+        let (handle, completedBatch): (SubscriptionHandle?, (rows: [(querySetId: QuerySetId?, rows: QueryRows)], updates: [TransactionUpdate])?) = withStateLock {
+            var handle: SubscriptionHandle?
+            var batchToFlush: (rows: [(querySetId: QuerySetId?, rows: QueryRows)], updates: [TransactionUpdate])?
+            if let requestId = error.requestId {
+                if let pending = pendingSubscriptionByRequestId.removeValue(forKey: requestId) {
+                    managedSubscriptions.removeValue(forKey: ObjectIdentifier(pending))
+                    handle = pending
+                }
+                if pendingReconnectRequestIds.remove(requestId) != nil, pendingReconnectRequestIds.isEmpty {
+                    batchToFlush = (pendingReconnectQueryRows, pendingReconnectTransactionUpdates)
+                    pendingReconnectQueryRows.removeAll()
+                    pendingReconnectTransactionUpdates.removeAll()
+                    tablesToRefresh.removeAll()
+                }
             }
-            let active = activeSubscriptionByQuerySetId.removeValue(forKey: error.querySetId)
-            if let active {
-                managedSubscriptions.removeValue(forKey: ObjectIdentifier(active))
+            if handle == nil {
+                let active = activeSubscriptionByQuerySetId.removeValue(forKey: error.querySetId)
+                if let active {
+                    managedSubscriptions.removeValue(forKey: ObjectIdentifier(active))
+                }
+                handle = active
             }
-            return active
+            return (handle, batchToFlush)
         }
 
         handle?.markError(error.error)
+        cache.evictQuerySet(error.querySetId)
+
+        if let completedBatch {
+            cache.reconcile(querySets: completedBatch.rows)
+            for buffered in completedBatch.updates {
+                cache.applyTransactionUpdate(buffered)
+            }
+            notifyRawTransactionUpdateObservers()
+            notifyTransactionUpdate()
+        } else {
+            notifyRawTransactionUpdateObservers()
+            notifyTransactionUpdate()
+        }
     }
 
     private func resubscribeManagedSubscriptions() {
         let subsToStart = withStateLock {
             activeSubscriptionByQuerySetId.removeAll()
             pendingSubscriptionByRequestId.removeAll()
-            return managedSubscriptions.values.filter { $0.state != .ended }
+            return Array(managedSubscriptions.values.filter { $0.state != .ended })
         }
-        
+
+        var replayedRequestIds = Set<RequestId>()
+        replayedRequestIds.reserveCapacity(subsToStart.count)
         for handle in subsToStart {
-            startSubscription(handle)
+            if let requestId = startSubscription(handle) {
+                replayedRequestIds.insert(requestId)
+            }
+        }
+
+        if !replayedRequestIds.isEmpty {
+            withStateLock {
+                pendingReconnectRequestIds = replayedRequestIds
+            }
         }
     }
 
@@ -1029,12 +1246,16 @@ public final class SpacetimeClient: @unchecked Sendable, WebSocketTransportDeleg
     // MARK: - Connection lifecycle
 
     private func setConnectionState(_ state: ConnectionState) {
-        let changed = withStateLock { () -> Bool in
-            guard _connectionState != state else { return false }
+        let continuations = withStateLock { () -> [AsyncStream<ConnectionState>.Continuation]? in
+            guard _connectionState != state else { return nil }
             _connectionState = state
-            return true
+            return Array(connectionStateContinuations.values)
         }
-        guard changed else { return }
+        guard let continuations else { return }
+
+        for continuation in continuations {
+            continuation.yield(state)
+        }
         
         emitGauge(
             "spacetimedb.connection.state",
